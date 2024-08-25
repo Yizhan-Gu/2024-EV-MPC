@@ -39,12 +39,21 @@ print("\033c") # Or REPL: Ctrl + L
 ####################################################
 # Data preprocessing
 
-# Importing the necessary files
+#= Importing the necessary files
 charging_sessions = CSV.read("/Users/admin/Desktop/EV_program/2023Fall_TotalEnergies/data_sessions.csv", DataFrame)
 charging_sessions.session_start_time_pacific = DateTime.(charging_sessions.session_start_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.session_end_time_pacific = DateTime.(charging_sessions.session_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.charging_end_time_pacific = DateTime.(charging_sessions.charging_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.Time_of_day = Time.(charging_sessions.session_start_time_pacific)
+charging_sessions.AT_day = Dates.Time.(charging_sessions.session_start_time_pacific)
+charging_sessions.DT_day = Dates.Time.(charging_sessions.session_end_time_pacific)
+select!(charging_sessions, Not(:Time_of_day))
+
+# Save the updated DataFrame to a CSV file
+CSV.write("clean_charging_sessions.csv", charging_sessions)
+=#
+
+charging_sessions = CSV.read("clean_charging_sessions.csv", DataFrame)
 
 names(charging_sessions)
 show(first(charging_sessions, 1), allcols=true)
@@ -220,6 +229,45 @@ end
 # Persistence forecast: AT, DT, ED, PD are the same as the previous daily data
 # GMM forecast: AT, DT, ED, PD are forecasted by GMM model
 
+
+# Function to predict using the most likely component
+function predict_gmm(models, data)
+    # Function to compute GMM density
+    function gmm_pdf(gmm, x)
+        density = 0.0
+        for i in 1:gmm.n
+            mu = gmm.μ[i]
+            sigma = sqrt(gmm.Σ[i])
+            weight = gmm.w[i]
+            density += weight * pdf(Normal(mu, sigma), x)
+        end
+        return density
+    end
+
+    best_gmm_AT = models["models"][1]
+    best_gmm_DT = models["models"][2]
+    best_gmm_ED = models["models"][3]
+    best_gmm_PD = models["models"][4]
+    
+    predictions = zeros(size(data, 1))
+    # For each data point, find the most likely component and use its mean as the prediction, and then update with Ben's method
+    # https://docs.google.com/presentation/d/1EMBE8Me50NhXHq-kFVkho-nn2YyRwtEi_801p6mAHo4/edit?pli=1#slide=id.g1ee332c0660_1_245
+    for i in 1:size(data, 1)
+        component_probs = gmm_pdf(gmm, data[i])
+        most_likely_component = argmax(component_probs)
+        predictions[i] = gmm.μ[most_likely_component] + (data[i] - gmm.μ[most_likely_component]) * gmm.Σ[most_likely_component]
+    end
+
+    return predictions
+end
+
+# For testing
+gmm = best_gmm_AT
+data = Float64.(Dates.hour.(data_input.session_start_time_pacific))
+predictions = predict_gmm(gmm, data)
+data_input = data_test
+method = "GMM"
+
 function forecast(data_input::DataFrame, method::String)
     forecast_list = ["Perfect", "Persistence", "GMM"]
     if method ∉ forecast_list
@@ -244,16 +292,7 @@ function forecast(data_input::DataFrame, method::String)
     elseif method == "GMM"
         # read the best GMM models
         models = load("best_gmms.jld")
-        best_gmm_AT = models["models"][1]
-        best_gmm_DT = models["models"][2]
-        best_gmm_ED = models["models"][3]
-        best_gmm_PD = models["models"][4]
-
-        # forecast AT, DT, PD, ED
-        data_input.AT = predict(best_gmm_AT, Float64.(Dates.hour.(data_input.session_start_time_pacific)))
-        data_input.DT = predict(best_gmm_DT, Float64.(Dates.hour.(data_input.session_end_time_pacific)))
-        data_input.ED = predict(best_gmm_ED, data_input.total_energy_dispensed)
-        data_input.PD = predict(best_gmm_PD, ceil.(Dates.value.(data_input.charging_end_time_pacific - data_input.session_start_time_pacific) / (3600*1000)))
+        [data_input.AT, data_input.DT, data_input.ED, data_input.PD] = predict_gmm(models, data_input) 
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
     end
@@ -272,8 +311,6 @@ data_test = filter(row -> start_date <= row.session_start_time_pacific <= end_da
                               row.station_name in stations, charging_sessions)
 data_test = sort(data_test, [:station_name, :session_start_time_pacific])
 
-data_input = data_test # For testing
-
 
 
 
@@ -281,12 +318,14 @@ data_input = data_test # For testing
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 
 # select method from ["Perfect", "Persistence", "GMM"]
-forecast(data_test, "Perfect")
+forecast(data_test, "GMM")
 show(first(data_test, 1), allcols=true)
 run_mpc(data_test)
 
 # Plot the results
-hist_AT = histogram(data_test.Time_of_day, bins=24, alpha=0.5, label="Number of Sessions", xlabel="Time of Day", ylabel="Number of Sessions", title="Number of Sessions vs Time of Day")
+hist_AT = histogram(data_test.AT_day, bins=24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions")
+
+hist_DT = histogram(data_test.DT_day, bins=24, alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions")
 
 p_load_MPC = plot(1:N, L_mpc,
          label="Perfect Forecast MPC",
@@ -296,8 +335,8 @@ p_load_MPC = plot(1:N, L_mpc,
          size=(800, 600),  # Set the size of the plot (width, height) in pixels
          dpi=300)          # Set the DPI (dots per inch)
 
-p = plot(hist_AT, p_load_MPC, layout=(2, 1), size=(800, 600), dpi=300)
+p = plot(hist_AT, hist_DT, p_load_MPC, layout=(3, 1), size=(800, 600), dpi=300)
 
-savefig(p, "mpc_to_AT.png")
+savefig(p, "Load_MPC.png")
 
 

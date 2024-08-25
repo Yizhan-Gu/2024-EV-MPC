@@ -52,13 +52,16 @@ test_jump()
 ####################################################
 # Data preprocessing
 
-# Importing the necessary files
+#= Importing the necessary files
 charging_sessions = CSV.read("/Users/admin/Desktop/EV_program/2023Fall_TotalEnergies/data_sessions.csv", DataFrame)
 
 charging_sessions.session_start_time_pacific = DateTime.(charging_sessions.session_start_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.session_end_time_pacific = DateTime.(charging_sessions.session_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.charging_end_time_pacific = DateTime.(charging_sessions.charging_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
 charging_sessions.Time_of_day = Time.(charging_sessions.session_start_time_pacific)
+=#
+
+charging_sessions = CSV.read("clean_charging_sessions.csv", DataFrame)
 
 names(charging_sessions)
 show(first(charging_sessions, 1), allcols=true)
