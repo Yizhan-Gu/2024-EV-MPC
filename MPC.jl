@@ -17,14 +17,19 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures"]
 
 for package in packages
     Pkg.add(package)
 end # Install the necessary packages
 
 for package in packages
-    eval(Meta.parse("using $package"))
+    try
+        @eval using $(Symbol(package))
+        println("Successfully loaded: $package")
+    catch e
+        println("Error loading package: $package - $e")
+    end
 end
 print("All packages are successfully loaded")
 
@@ -46,11 +51,13 @@ show(first(charging_sessions, 1), allcols=true)
 
 
 
+
 ####################################################
 # MPC optimization on EV charging cost minimization and peak shaving
 # GMM forecast number of EVs in terms of AT and ED
 # https://ieeexplore.ieee.org/document/10184283
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
+
 
 # Electricity rates
 # https://www.sdge.com/residential/pricing-plans/about-our-pricing-plans/whenmatters
@@ -72,6 +79,7 @@ T_start_idx = Int(16 / delta_t + 1)
 T_end_idx = Int(21 / delta_t)
 DWR_charge = 0.0
 
+
 function get_season(date::DateTime)
     month = Dates.month(date)
     if month in 3:5
@@ -85,16 +93,18 @@ function get_season(date::DateTime)
     end
 end
 
-# Initialize empty variables
+####################################################
 L_mpc = zeros(N)
 
-# Assume everything is known and only test if MPC works
-function run_mpc(data_input)
+# MPC is run daily
+function run_mpc(data_input::DataFrame)
     season = get_season(data_input.session_start_time_pacific[1]) # Assume all sessions happen in the same season
-    ED = data_input.total_energy_dispensed
-    AT = Float64.(Dates.hour.(data_input.session_start_time_pacific))
-    DT = Float64.(Dates.hour.(data_input.session_end_time_pacific))
-    forecasted_n_EV = size(data_input, 1)
+
+    AT = data_input.AT
+    DT = data_input.DT
+    ED = data_input.ED
+    PD = data_input.PD # not used here?
+    forecasted_n_EV = data_input.forecasted_n_EV[1]
 
     # Define rates based on season
     if season == "summer"
@@ -115,6 +125,7 @@ function run_mpc(data_input)
     M = 1e6
 
     # Optimize with loop through each time slot b.c. change of objective function
+    tic = time()
     @showprogress for k in 1:N
         model = Model(Ipopt.Optimizer)
         # Set solver options
@@ -175,12 +186,9 @@ function run_mpc(data_input)
         # Define the demand charge as an expression
         @expression(model, demand_charge_k, r_power_nc * gamma_nc_k + r_power_onpeak * gamma_onpeak_k)
 
-        # Initialize expressions for energy charge components
-        energy_offpeak_charge_k = @expression(model, sum(delta_t * r_energy_offpeak * L[t] for t in Index_offpeak))
-        energy_onpeak_charge_k = @expression(model, sum(delta_t * r_energy_onpeak * L[t] for t in Index_onpeak))
-
         # Combine the components into the total energy charge
-        @expression(model, energy_charge_k, energy_offpeak_charge_k + energy_onpeak_charge_k)
+        @expression(model, energy_charge_k, sum(delta_t * r_energy_offpeak * L[t] for t in Index_offpeak) +
+                        sum(delta_t * r_energy_onpeak * L[t] for t in Index_onpeak))
 
 
         # Define the other charges as an expression
@@ -197,6 +205,8 @@ function run_mpc(data_input)
 
         L_mpc[k] = value(L[k])
     end
+    toc = time()
+    print("MPC optimization is done with time: ", ceil(toc - tic), " seconds")
 end
 
 
@@ -204,25 +214,81 @@ end
 
 
 ####################################################
-# Sample: Persistence forecast for testing
-# Assume AT, DT, ED, PD are known
+# Forecast is run daily
 
-# 1. Load data
+# Perfect forecast: AT, DT, ED, PD are known, and true data in dataset is used
+# Persistence forecast: AT, DT, ED, PD are the same as the previous daily data
+# GMM forecast: AT, DT, ED, PD are forecasted by GMM model
+
+function forecast(data_input::DataFrame, method::String)
+    forecast_list = ["Perfect", "Persistence", "GMM"]
+    if method ∉ forecast_list
+        error("Invalid forecast method")
+    elseif method == "Perfect"
+        data_input.AT = Float64.(Dates.hour.(data_input.session_start_time_pacific))
+        data_input.DT = Float64.(Dates.hour.(data_input.session_end_time_pacific))
+        data_input.ED = data_input.total_energy_dispensed
+        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_pacific - data_input.session_start_time_pacific) / (3600*1000), digits=0)
+        data_input.forecasted_n_EV .= size(data_input, 1)
+        return nothing
+    elseif method == "Persistence" # ❗️Not understood yet
+        data_last_day = charging_sessions[
+            Date.(charging_sessions.session_start_time_pacific) .== Date(data_input.session_start_time_pacific[1] - Day(1)), :
+        ]
+        data_input.AT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_start_time_pacific))))
+        data_input.DT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_end_time_pacific))))
+        data_input.ED .= mean(data_last_day.total_energy_dispensed)
+        data_input.PD .= ceil(mean(Dates.value.(data_last_day.charging_end_time_pacific - data_last_day.session_start_time_pacific) / (3600*1000)), digits=0)
+        data_input.forecasted_n_EV .= size(data_last_day, 1)
+        return nothing
+    elseif method == "GMM"
+        # read the best GMM models
+        models = load("best_gmms.jld")
+        best_gmm_AT = models["models"][1]
+        best_gmm_DT = models["models"][2]
+        best_gmm_ED = models["models"][3]
+        best_gmm_PD = models["models"][4]
+
+        # forecast AT, DT, PD, ED
+        data_input.AT = predict(best_gmm_AT, Float64.(Dates.hour.(data_input.session_start_time_pacific)))
+        data_input.DT = predict(best_gmm_DT, Float64.(Dates.hour.(data_input.session_end_time_pacific)))
+        data_input.ED = predict(best_gmm_ED, data_input.total_energy_dispensed)
+        data_input.PD = predict(best_gmm_PD, ceil.(Dates.value.(data_input.charging_end_time_pacific - data_input.session_start_time_pacific) / (3600*1000)))
+        data_input.forecasted_n_EV .= size(data_input, 1)
+        return nothing
+    end
+end
+
+
+
+####################################################
+# Start MPC optimization
+# Load test data
 stations = first(unique(charging_sessions.station_name), 10)
 start_date = minimum(charging_sessions.session_start_time_pacific)
-end_date = start_date + Month(3)
+end_date = start_date + Month(2)
 
-data_mpc = filter(row -> start_date <= row.session_start_time_pacific <= end_date &&
+data_test = filter(row -> start_date <= row.session_start_time_pacific <= end_date &&
                               row.station_name in stations, charging_sessions)
-data_mpc = sort(data_mpc, [:station_name, :session_start_time_pacific])
+data_test = sort(data_test, [:station_name, :session_start_time_pacific])
 
-# 2. Run MPC
-run_mpc(data_mpc)
+data_input = data_test # For testing
 
-# 3. Plot results
+
+
+
+# Run Forecast, MPC and Plot results
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 
-p = plot(1:N, L_mpc,
+# select method from ["Perfect", "Persistence", "GMM"]
+forecast(data_test, "Perfect")
+show(first(data_test, 1), allcols=true)
+run_mpc(data_test)
+
+# Plot the results
+hist_AT = histogram(data_test.Time_of_day, bins=24, alpha=0.5, label="Number of Sessions", xlabel="Time of Day", ylabel="Number of Sessions", title="Number of Sessions vs Time of Day")
+
+p_load_MPC = plot(1:N, L_mpc,
          label="Perfect Forecast MPC",
          xlabel="Time Index",
          ylabel="Load (kW)",
@@ -230,8 +296,8 @@ p = plot(1:N, L_mpc,
          size=(800, 600),  # Set the size of the plot (width, height) in pixels
          dpi=300)          # Set the DPI (dots per inch)
 
-# Saving the plot as an image file with the specified DPI
-savefig(p, "mpc_load_profile.png")
+p = plot(hist_AT, p_load_MPC, layout=(2, 1), size=(800, 600), dpi=300)
 
-# 4. Repeat regularly with forecasted data
+savefig(p, "mpc_to_AT.png")
+
 

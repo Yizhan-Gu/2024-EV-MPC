@@ -17,7 +17,7 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "Ipopt", "Dates", "DataFramesMeta", "GaussianMixtures", "Distributions", "GaussianMixtures", "KernelDensity"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "JLD", "Dates", "DataFramesMeta", "GaussianMixtures", "Distributions", "KernelDensity"]
 
 for package in packages
     Pkg.add(package)
@@ -30,6 +30,7 @@ print("All packages are successfully loaded")
 
 # Clear console
 print("\033c") # Or REPL: Ctrl + L
+# Note: to clear workspace, use Ctrl + D
 
 ####################################################
 # Sample code for JuMP optimization with Ipopt
@@ -270,3 +271,6 @@ best_gmm_DT = gmm_DT[best_cp.Component[2]]
 best_gmm_ED = gmm_PD[best_cp.Component[3]]
 best_gmm_PD = gmm_ED[best_cp.Component[4]]
 
+# Save the best GMM models
+# save(filename::String, name::String, gmm::GMM)
+save("best_gmms.jld", "models", [best_gmm_AT, best_gmm_DT, best_gmm_ED, best_gmm_PD])
