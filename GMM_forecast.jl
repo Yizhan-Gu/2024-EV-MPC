@@ -74,7 +74,7 @@ data_PD = Float64.(Dates.value.(charging_sessions.PD))
 data_ED = charging_sessions.total_energy_dispensed
 
 
-# ❗️Select time resolution manually
+# TODO: Select time resolution manually
 flag = "hour"
 # flag = "minute"
 

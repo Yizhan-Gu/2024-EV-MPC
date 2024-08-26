@@ -229,44 +229,65 @@ end
 # Persistence forecast: AT, DT, ED, PD are the same as the previous daily data
 # GMM forecast: AT, DT, ED, PD are forecasted by GMM model
 
-
-# Function to predict using the most likely component
-function predict_gmm(models, data)
-    # Function to compute GMM density
-    function gmm_pdf(gmm, x)
-        density = 0.0
-        for i in 1:gmm.n
-            mu = gmm.μ[i]
-            sigma = sqrt(gmm.Σ[i])
-            weight = gmm.w[i]
-            density += weight * pdf(Normal(mu, sigma), x)
-        end
-        return density
+# Function to compute GMM density
+function gmm_pdf(gmm, x)
+    density = 0.0
+    for i in 1:gmm.n
+        mu = gmm.μ[i]
+        sigma = sqrt(gmm.Σ[i])
+        weight = gmm.w[i]
+        density += weight * pdf(Normal(mu, sigma), x)
     end
-
-    best_gmm_AT = models["models"][1]
-    best_gmm_DT = models["models"][2]
-    best_gmm_ED = models["models"][3]
-    best_gmm_PD = models["models"][4]
-    
-    predictions = zeros(size(data, 1))
-    # For each data point, find the most likely component and use its mean as the prediction, and then update with Ben's method
-    # https://docs.google.com/presentation/d/1EMBE8Me50NhXHq-kFVkho-nn2YyRwtEi_801p6mAHo4/edit?pli=1#slide=id.g1ee332c0660_1_245
-    for i in 1:size(data, 1)
-        component_probs = gmm_pdf(gmm, data[i])
-        most_likely_component = argmax(component_probs)
-        predictions[i] = gmm.μ[most_likely_component] + (data[i] - gmm.μ[most_likely_component]) * gmm.Σ[most_likely_component]
-    end
-
-    return predictions
+    return density
 end
 
-# For testing
-gmm = best_gmm_AT
-data = Float64.(Dates.hour.(data_input.session_start_time_pacific))
-predictions = predict_gmm(gmm, data)
+
+# Function to predict using the most likely component
+function predict_gmm(data_input)
+    # Load the GMM models from the file
+    models = load("best_gmms.jld")  # Adjust file extension based on actual file type
+
+    # Extract the individual GMM models from the loaded data
+    best_gmms = models["models"]
+    best_gmm_AT, best_gmm_DT, best_gmm_ED, best_gmm_PD = best_gmms[1:4]
+
+    # Prepare arrays to store predictions
+    n = size(data_input, 1)
+    predict_gmm_AT = zeros(n)
+    predict_gmm_DT = zeros(n)
+    predict_gmm_ED = zeros(n)
+    predict_gmm_PD = zeros(n)
+
+    # For each data point, find the most likely component and use its mean as the prediction, and then update with Ben's method
+    # https://docs.google.com/presentation/d/1EMBE8Me50NhXHq-kFVkho-nn2YyRwtEi_801p6mAHo4/edit?pli=1#slide=id.g1ee332c0660_1_245
+    # TODO: Not sure how to update the prediction with Ben's method
+    for i in 1:n
+        # Extract the data point
+        x = [data_input.AT[i], data_input.DT[i], data_input.ED[i], data_input.PD[i]]
+        # Compute the likelihood of the data point under each GMM
+        likelihood_AT = gmm_pdf(best_gmm_AT, x[1])
+        likelihood_DT = gmm_pdf(best_gmm_DT, x[2])
+        likelihood_ED = gmm_pdf(best_gmm_ED, x[3])
+        likelihood_PD = gmm_pdf(best_gmm_PD, x[4])
+        # Find the most likely component for each feature
+        component_AT = argmax([likelihood_AT])
+        component_DT = argmax([likelihood_DT])
+        component_ED = argmax([likelihood_ED])
+        component_PD = argmax([likelihood_PD])
+        # Use the mean of the most likely component as the prediction
+        predict_gmm_AT[i] = best_gmm_AT.μ[component_AT]
+        predict_gmm_DT[i] = best_gmm_DT.μ[component_DT]
+        predict_gmm_ED[i] = best_gmm_ED.μ[component_ED]
+        predict_gmm_PD[i] = best_gmm_PD.μ[component_PD]
+    end
+
+    return predict_gmm_AT, predict_gmm_DT, predict_gmm_ED, predict_gmm_PD
+end
+
+# TODO: For testing
 data_input = data_test
 method = "GMM"
+#
 
 function forecast(data_input::DataFrame, method::String)
     forecast_list = ["Perfect", "Persistence", "GMM"]
@@ -279,7 +300,7 @@ function forecast(data_input::DataFrame, method::String)
         data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_pacific - data_input.session_start_time_pacific) / (3600*1000), digits=0)
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
-    elseif method == "Persistence" # ❗️Not understood yet
+    elseif method == "Persistence" # TODO: Need to update
         data_last_day = charging_sessions[
             Date.(charging_sessions.session_start_time_pacific) .== Date(data_input.session_start_time_pacific[1] - Day(1)), :
         ]
@@ -290,9 +311,7 @@ function forecast(data_input::DataFrame, method::String)
         data_input.forecasted_n_EV .= size(data_last_day, 1)
         return nothing
     elseif method == "GMM"
-        # read the best GMM models
-        models = load("best_gmms.jld")
-        [data_input.AT, data_input.DT, data_input.ED, data_input.PD] = predict_gmm(models, data_input) 
+        [data_input.AT, data_input.DT, data_input.ED, data_input.PD] = predict_gmm(data_input) 
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
     end
@@ -318,7 +337,7 @@ data_test = sort(data_test, [:station_name, :session_start_time_pacific])
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 
 # select method from ["Perfect", "Persistence", "GMM"]
-forecast(data_test, "GMM")
+forecast(data_test, "Perfect")
 show(first(data_test, 1), allcols=true)
 run_mpc(data_test)
 
