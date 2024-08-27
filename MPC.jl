@@ -63,7 +63,6 @@ show(first(charging_sessions, 1), allcols=true)
 
 ####################################################
 # MPC optimization on EV charging cost minimization and peak shaving
-# GMM forecast number of EVs in terms of AT and ED
 # https://ieeexplore.ieee.org/document/10184283
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 
