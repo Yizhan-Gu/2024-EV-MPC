@@ -41,12 +41,12 @@ print("\033c") # Or REPL: Ctrl + L
 
 #= Importing the necessary files
 charging_sessions = CSV.read("/Users/admin/Desktop/EV_program/2023Fall_TotalEnergies/data_sessions.csv", DataFrame)
-charging_sessions.session_start_time_pacific = DateTime.(charging_sessions.session_start_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
-charging_sessions.session_end_time_pacific = DateTime.(charging_sessions.session_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
-charging_sessions.charging_end_time_pacific = DateTime.(charging_sessions.charging_end_time_pacific, dateformat"yyyy-mm-ddTHH:MM:SSZ")
-charging_sessions.Time_of_day = Time.(charging_sessions.session_start_time_pacific)
-charging_sessions.AT_day = Dates.Time.(charging_sessions.session_start_time_pacific)
-charging_sessions.DT_day = Dates.Time.(charging_sessions.session_end_time_pacific)
+charging_sessions.session_start_time_la = DateTime.(charging_sessions.session_start_time_la, dateformat"yyyy-mm-ddTHH:MM:SSZ")
+charging_sessions.session_end_time_la = DateTime.(charging_sessions.session_end_time_la, dateformat"yyyy-mm-ddTHH:MM:SSZ")
+charging_sessions.charging_end_time_la = DateTime.(charging_sessions.charging_end_time_la, dateformat"yyyy-mm-ddTHH:MM:SSZ")
+charging_sessions.Time_of_day = Time.(charging_sessions.session_start_time_la)
+charging_sessions.AT_day = Dates.Time.(charging_sessions.session_start_time_la)
+charging_sessions.DT_day = Dates.Time.(charging_sessions.session_end_time_la)
 select!(charging_sessions, Not(:Time_of_day))
 
 # Save the updated DataFrame to a CSV file
@@ -106,7 +106,7 @@ L_mpc = zeros(N)
 
 # MPC is run daily
 function run_mpc(data_input::DataFrame)
-    season = get_season(data_input.session_start_time_pacific[1]) # Assume all sessions happen in the same season
+    season = get_season(data_input.session_start_time_la[1]) # Assume all sessions happen in the same season
 
     AT = data_input.AT
     DT = data_input.DT
@@ -285,7 +285,7 @@ end
 
 # TODO: For testing
 data_input = data_test
-method = "GMM"
+method = "Perfect"
 #
 
 function forecast(data_input::DataFrame, method::String)
@@ -293,24 +293,31 @@ function forecast(data_input::DataFrame, method::String)
     if method ∉ forecast_list
         error("Invalid forecast method")
     elseif method == "Perfect"
-        data_input.AT = Float64.(Dates.hour.(data_input.session_start_time_pacific))
-        data_input.DT = Float64.(Dates.hour.(data_input.session_end_time_pacific))
+        # TODO: The AT, DT, ED, PD should comply with the step horizon of MPC
+
+
+
+
+
+
+        data_input.AT = Float64.(Dates.hour.(data_input.session_start_time_la))
+        data_input.DT = Float64.(Dates.hour.(data_input.session_end_time_la))
         data_input.ED = data_input.total_energy_dispensed
-        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_pacific - data_input.session_start_time_pacific) / (3600*1000), digits=0)
+        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=0)
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
     elseif method == "Persistence" # TODO: Need to update
         data_last_day = charging_sessions[
-            Date.(charging_sessions.session_start_time_pacific) .== Date(data_input.session_start_time_pacific[1] - Day(1)), :
+            Date.(charging_sessions.session_start_time_la) .== Date(data_input.session_start_time_la[1] - Day(1)), :
         ]
-        data_input.AT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_start_time_pacific))))
-        data_input.DT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_end_time_pacific))))
+        data_input.AT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_start_time_la))))
+        data_input.DT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_end_time_la))))
         data_input.ED .= mean(data_last_day.total_energy_dispensed)
-        data_input.PD .= ceil(mean(Dates.value.(data_last_day.charging_end_time_pacific - data_last_day.session_start_time_pacific) / (3600*1000)), digits=0)
+        data_input.PD .= ceil(mean(Dates.value.(data_last_day.charging_end_time_la - data_last_day.session_start_time_la) / (3600*1000)), digits=0)
         data_input.forecasted_n_EV .= size(data_last_day, 1)
         return nothing
     elseif method == "GMM"
-        [data_input.AT, data_input.DT, data_input.ED, data_input.PD] = predict_gmm(data_input) 
+        data_input.AT, data_input.DT, data_input.ED, data_input.PD = predict_gmm(data_input) 
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
     end
@@ -322,14 +329,12 @@ end
 # Start MPC optimization
 # Load test data
 stations = first(unique(charging_sessions.station_name), 10)
-start_date = minimum(charging_sessions.session_start_time_pacific)
-end_date = start_date + Month(2)
+start_date = minimum(charging_sessions.session_start_time_la)
+end_date = start_date + Month(6)
 
-data_test = filter(row -> start_date <= row.session_start_time_pacific <= end_date &&
+data_test = filter(row -> start_date <= row.session_start_time_la <= end_date &&
                               row.station_name in stations, charging_sessions)
-data_test = sort(data_test, [:station_name, :session_start_time_pacific])
-
-
+data_test = sort(data_test, [:station_name, :session_start_time_la])
 
 
 # Run Forecast, MPC and Plot results
@@ -341,9 +346,9 @@ show(first(data_test, 1), allcols=true)
 run_mpc(data_test)
 
 # Plot the results
-hist_AT = histogram(data_test.AT_day, bins=24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions")
+hist_AT = histogram(data_test.AT, bins=24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions")
 
-hist_DT = histogram(data_test.DT_day, bins=24, alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions")
+hist_DT = histogram(data_test.DT, bins=24, alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions")
 
 p_load_MPC = plot(1:N, L_mpc,
          label="Perfect Forecast MPC",
