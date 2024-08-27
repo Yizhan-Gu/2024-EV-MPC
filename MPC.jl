@@ -26,7 +26,7 @@ end # Install the necessary packages
 for package in packages
     try
         @eval using $(Symbol(package))
-        println("Successfully loaded: $package")
+        # println("Successfully loaded: $package")
     catch e
         println("Error loading package: $package - $e")
     end
@@ -111,7 +111,7 @@ function run_mpc(data_input::DataFrame)
     AT = data_input.AT
     DT = data_input.DT
     ED = data_input.ED
-    PD = data_input.PD # not used here?
+    PD = data_input.PD
     forecasted_n_EV = data_input.forecasted_n_EV[1]
 
     # Define rates based on season
@@ -131,6 +131,8 @@ function run_mpc(data_input::DataFrame)
 
     # Initialize variables
     M = 1e6
+    AT_idx = floor.(Int, AT / T * N)
+    DT_idx = floor.(Int, DT / T * N)
 
     # Optimize with loop through each time slot b.c. change of objective function
     tic = time()
@@ -153,10 +155,19 @@ function run_mpc(data_input::DataFrame)
         # Constraints
         # Constraints for P[t, i]
         @constraint(model, [t=k:N, i=1:forecasted_n_EV], 0 <= P[t, i] <= P_max)
-        @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t * delta_t >= AT[i]) + M * (t * delta_t <= DT[i]))
+        @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t >= AT_idx[i]))
+        @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t <= DT_idx[i]))
     
         # Initial and final energy constraints
-        @constraint(model, [i=1:forecasted_n_EV], E[N, i] == ED[i])
+        # @constraint(model, [i=1:forecasted_n_EV], E[N, i] == ED[i]) # Wrong constraint!
+        for i in 1:forecasted_n_EV
+            if DT_idx[i] >= k
+                @constraint(model, E[DT_idx[i], i] == ED[i])
+            else
+                @constraint(model, [t=k:N], E[t, i] == 0)
+            end
+        end
+
         @constraint(model, [i=1:forecasted_n_EV], E[k, i] == 0)  # Ensure initial condition for k
     
         # Energy balance constraint with boundary check
@@ -293,27 +304,21 @@ function forecast(data_input::DataFrame, method::String)
     if method ∉ forecast_list
         error("Invalid forecast method")
     elseif method == "Perfect"
-        # TODO: The AT, DT, ED, PD should comply with the step horizon of MPC
-
-
-
-
-
-
-        data_input.AT = Float64.(Dates.hour.(data_input.session_start_time_la))
-        data_input.DT = Float64.(Dates.hour.(data_input.session_end_time_la))
+        # The AT, DT, ED, PD should comply with or be more precise than the step length of MPC
+        data_input.AT = ceil.(Float64.(Dates.hour.(data_input.session_start_time_la)) + Float64.(Dates.minute.(data_input.session_start_time_la)) / 60, digits=2)
+        data_input.DT = ceil.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
         data_input.ED = data_input.total_energy_dispensed
-        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=0)
+        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
         data_input.forecasted_n_EV .= size(data_input, 1)
         return nothing
     elseif method == "Persistence" # TODO: Need to update
         data_last_day = charging_sessions[
             Date.(charging_sessions.session_start_time_la) .== Date(data_input.session_start_time_la[1] - Day(1)), :
         ]
-        data_input.AT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_start_time_la))))
-        data_input.DT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_end_time_la))))
+        data_input.AT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_start_time_la))), digits=2)
+        data_input.DT .= ceil(mean(Float64.(Dates.hour.(data_last_day.session_end_time_la))), digits=2)
         data_input.ED .= mean(data_last_day.total_energy_dispensed)
-        data_input.PD .= ceil(mean(Dates.value.(data_last_day.charging_end_time_la - data_last_day.session_start_time_la) / (3600*1000)), digits=0)
+        data_input.PD .= ceil(mean(Dates.value.(data_last_day.charging_end_time_la - data_last_day.session_start_time_la) / (3600*1000)), digits=2)
         data_input.forecasted_n_EV .= size(data_last_day, 1)
         return nothing
     elseif method == "GMM"
