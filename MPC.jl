@@ -62,7 +62,10 @@ show(first(charging_sessions, 1), allcols=true)
 
 
 ####################################################
-# MPC optimization on EV charging cost minimization and peak shaving
+# MPC optimization on EV charging cost minimization and peak shaving (V1G)
+#   V0G: Standard EV charging without any smart grid interaction.
+#	V1G: Optimizes the charging process for cost savings or environmental benefits.
+#	V2G: Advanced grid integration where the EV plays an active role in energy markets and grid stability.
 # https://ieeexplore.ieee.org/document/10184283
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 
@@ -104,7 +107,7 @@ end
 ####################################################
 L_mpc = zeros(N)
 
-# MPC is run daily
+# Shrinking MPC is run daily
 function run_mpc(data_input::DataFrame)
     season = get_season(data_input.session_start_time_la[1]) # Assume all sessions happen in the same season
 
@@ -153,30 +156,29 @@ function run_mpc(data_input::DataFrame)
         end
 
         # Constraints
-        # Constraints for P[t, i]
         @constraint(model, [t=k:N, i=1:forecasted_n_EV], 0 <= P[t, i] <= P_max)
-        @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t >= AT_idx[i]))
-        @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t <= DT_idx[i]))
+
+        # @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t >= AT_idx[i]))
+        # @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t <= DT_idx[i]))
     
-        # Initial and final energy constraints
         # @constraint(model, [i=1:forecasted_n_EV], E[N, i] == ED[i]) # Wrong constraint!
         for i in 1:forecasted_n_EV
             if DT_idx[i] >= k
                 @constraint(model, E[DT_idx[i], i] == ED[i])
             else
-                @constraint(model, [t=k:N], E[t, i] == 0)
+                @constraint(model, [t=k:N], P[t, i] == 0)
+            end
+
+            if AT_idx[i] > k
+                @constraint(model, [t=k:AT_idx[i]-1], P[t, i] == 0)
             end
         end
 
-        @constraint(model, [i=1:forecasted_n_EV], E[k, i] == 0)  # Ensure initial condition for k
+        @constraint(model, [i=1:forecasted_n_EV], E[k, i] == 0)
     
-        # Energy balance constraint with boundary check
         @constraint(model, [t=k+1:N, i=1:forecasted_n_EV], E[t, i] == E[t-1, i] + P[t, i] * delta_t)
-        # @constraint(model, [t=k:N, i=1:forecasted_n_EV], E[t, i] >= 0)
     
-        # Load constraints
         @constraint(model, [t=k:N], L[t] == sum(P[t, i] for i in 1:forecasted_n_EV))
-        # @constraint(model, [t=k:N], L[t] >= 0)
 
         # Peak horizons and costs
         Index_onpeak = []
@@ -193,7 +195,9 @@ function run_mpc(data_input::DataFrame)
             Index_offpeak = k:N
         end
 
-        @constraint(model, [t=k:N], gamma_nc_k >= L[t])
+        # @constraint(model, [t=k:N], gamma_nc_k >= L[t])
+        @constraint(model, [t=k:N], gamma_nc_k == maximum(L[t]))
+
         if !isempty(Index_onpeak)
             @constraint(model, [t in Index_onpeak], gamma_onpeak_k >= L[t])
         elseif isempty(Index_onpeak)
@@ -217,7 +221,7 @@ function run_mpc(data_input::DataFrame)
 
         # Define the objective function as an expression
         @expression(model, J_k, demand_charge_k + energy_charge_k + other_charge_k)
-
+        # @expression(model, J_k, energy_charge_k)
         @objective model Min J_k
 
         optimize!(model)
@@ -335,7 +339,7 @@ end
 # Load test data
 stations = first(unique(charging_sessions.station_name), 10)
 start_date = minimum(charging_sessions.session_start_time_la)
-end_date = start_date + Month(6)
+end_date = start_date + Month(3)
 
 data_test = filter(row -> start_date <= row.session_start_time_la <= end_date &&
                               row.station_name in stations, charging_sessions)
@@ -351,9 +355,9 @@ show(first(data_test, 1), allcols=true)
 run_mpc(data_test)
 
 # Plot the results
-hist_AT = histogram(data_test.AT, bins=24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions")
+hist_AT = histogram(data_test.AT, bins=1:24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions", xticks=1:24)
 
-hist_DT = histogram(data_test.DT, bins=24, alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions")
+hist_DT = histogram(data_test.DT, bins=1:24, alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions", xticks=1:24)
 
 p_load_MPC = plot(1:N, L_mpc,
          label="Perfect Forecast MPC",
