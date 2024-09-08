@@ -77,8 +77,11 @@ r_energy_summer_onpeak = 0.11957 + r_energy_ur # $/kWh
 r_energy_summer_offpeak = 0.10008 + r_energy_ur # $/kWh
 r_energy_winter_onpeak = 0.09955 + r_energy_ur # $/kWh
 r_energy_winter_offpeak = 0.08835 + r_energy_ur # $/kWh
+r_energy_midseason_onpeak = 0.5 * (r_energy_summer_onpeak + r_energy_winter_onpeak) # $/kWh
+r_energy_midseason_offpeak = 0.5 * (r_energy_summer_offpeak + r_energy_winter_offpeak) # $/kWh
 r_power_summer_onpeak = 9.78 + 19.14 # $/kW
 r_power_winter_onpeak = 19.23 # $/kW
+r_power_midseason_onpeak = 0.5 * (r_power_summer_onpeak + r_power_winter_onpeak) # $/kW
 r_power_nc = 24.48 # $/kW
 
 # Parameters
@@ -105,8 +108,6 @@ function get_season(date::DateTime)
 end
 
 ####################################################
-L_mpc = zeros(N)
-
 # Shrinking MPC is run daily
 function run_mpc(data_input::DataFrame)
     season = get_season(data_input.session_start_time_la[1]) # Assume all sessions happen in the same season
@@ -116,6 +117,10 @@ function run_mpc(data_input::DataFrame)
     ED = data_input.ED
     PD = data_input.PD
     forecasted_n_EV = data_input.forecasted_n_EV[1]
+
+    L_mpc = zeros(N)
+    P_mpc = zeros(N, forecasted_n_EV)
+    E_mpc = zeros(N, forecasted_n_EV)
 
     # Define rates based on season
     if season == "summer"
@@ -127,9 +132,9 @@ function run_mpc(data_input::DataFrame)
         r_energy_offpeak = r_energy_winter_offpeak
         r_power_onpeak = r_power_winter_onpeak
     else
-        r_energy_onpeak = r_energy_ur
-        r_energy_offpeak = r_energy_ur
-        r_power_onpeak = r_power_nc
+        r_energy_onpeak = r_energy_midseason_onpeak
+        r_energy_offpeak = r_energy_midseason_offpeak
+        r_power_onpeak = r_power_midseason_onpeak
     end
 
     # Initialize variables
@@ -145,7 +150,7 @@ function run_mpc(data_input::DataFrame)
         set_optimizer_attribute(model, "max_iter", 1000)  # Set maximum number of iterations
         set_optimizer_attribute(model, "tol", 1e-6)       # Set tolerance for convergence
         set_optimizer_attribute(model, "acceptable_tol", 1e-4)  # Set acceptable tolerance
-        set_optimizer_attribute(model, "print_level", 2)  # Set printing level (0: no output, 5: full output)
+        set_optimizer_attribute(model, "print_level", 3)  # Set printing level (0: no output, 5: full output)
 
         @variables model begin
             P[k:N, 1:forecasted_n_EV] >= 0
@@ -156,27 +161,33 @@ function run_mpc(data_input::DataFrame)
         end
 
         # Constraints
-        @constraint(model, [t=k:N, i=1:forecasted_n_EV], 0 <= P[t, i] <= P_max)
 
         # @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t >= AT_idx[i]))
         # @constraint(model, [t=k:N, i=1:forecasted_n_EV], P[t, i] <= M * (t <= DT_idx[i]))
-    
-        # @constraint(model, [i=1:forecasted_n_EV], E[N, i] == ED[i]) # Wrong constraint!
+
         for i in 1:forecasted_n_EV
+            @constraint(model, [t=k:N], 0 <= P[t, i] <= P_max)
+            # @constraint(model, [t=k:N], E[t, i] <= ED[i])
+
             if DT_idx[i] >= k
                 @constraint(model, E[DT_idx[i], i] == ED[i])
-            else
+            elseif DT_idx[i] < k
                 @constraint(model, [t=k:N], P[t, i] == 0)
             end
 
             if AT_idx[i] > k
                 @constraint(model, [t=k:AT_idx[i]-1], P[t, i] == 0)
             end
-        end
 
-        @constraint(model, [i=1:forecasted_n_EV], E[k, i] == 0)
-    
-        @constraint(model, [t=k+1:N, i=1:forecasted_n_EV], E[t, i] == E[t-1, i] + P[t, i] * delta_t)
+            # Initialize the energy state
+            if k == 1
+                @constraint(model, E[k, i] == 0)
+            end
+
+            if k <= N-1
+                @constraint(model, [t=k+1:N], E[t, i] == E[t-1, i] + P[t, i] * delta_t)
+            end
+        end
     
         @constraint(model, [t=k:N], L[t] == sum(P[t, i] for i in 1:forecasted_n_EV))
 
@@ -186,20 +197,20 @@ function run_mpc(data_input::DataFrame)
 
         if k < T_start_idx
             Index_onpeak = T_start_idx:T_end_idx
-            Index_offpeak = vcat(k:T_start_idx, T_end_idx:N)
-        elseif T_start_idx <= k < T_end_idx
+            Index_offpeak = vcat(k:T_start_idx-1, T_end_idx+1:N)
+        elseif T_start_idx <= k <= T_end_idx
             Index_onpeak = k:T_end_idx
-            Index_offpeak = T_end_idx:N
-        elseif k >= T_end_idx
+            Index_offpeak = T_end_idx+1:N
+        elseif k > T_end_idx
             Index_onpeak = []
             Index_offpeak = k:N
-        end
+        end        
 
         # @constraint(model, [t=k:N], gamma_nc_k >= L[t])
         @constraint(model, [t=k:N], gamma_nc_k == maximum(L[t]))
 
         if !isempty(Index_onpeak)
-            @constraint(model, [t in Index_onpeak], gamma_onpeak_k >= L[t])
+            @constraint(model, gamma_onpeak_k == maximum(L[t] for t in Index_onpeak))
         elseif isempty(Index_onpeak)
             @constraint(model, gamma_onpeak_k == 0)
         end
@@ -210,29 +221,32 @@ function run_mpc(data_input::DataFrame)
         @expression(model, demand_charge_k, r_power_nc * gamma_nc_k + r_power_onpeak * gamma_onpeak_k)
 
         # Combine the components into the total energy charge
-        @expression(model, energy_charge_k, sum(delta_t * r_energy_offpeak * L[t] for t in Index_offpeak) +
-                        sum(delta_t * r_energy_onpeak * L[t] for t in Index_onpeak))
+        @expression(model, energy_charge_k, delta_t * sum(r_energy_offpeak * L[t] for t in Index_offpeak) + 
+                                            delta_t * sum(r_energy_onpeak * L[t] for t in Index_onpeak))
 
 
         # Define the other charges as an expression
+        # TODO: the total energy use in a month is not known and assumed to be the sum of all ED in 30 days
         @expression(model, other_charge_k, 0.0578 * (demand_charge_k + energy_charge_k) +
-                        (0.0058 + 0.00058 + 0.0003) * delta_t * sum(L[t] for t in k:N) +
+                        (0.0058 + 0.00058 + 0.0003) * sum(ED[i] for i in 1:forecasted_n_EV) * 30 +
                         0.0688 * DWR_charge)
 
         # Define the objective function as an expression
         @expression(model, J_k, demand_charge_k + energy_charge_k + other_charge_k)
-        # @expression(model, J_k, energy_charge_k)
-        @objective model Min J_k
+
+        @objective(model, Min, J_k)
 
         optimize!(model)
 
         L_mpc[k] = value(L[k])
+        P_mpc[k, :] = value.(P[k, :])
+        E_mpc[k, :] = value.(E[k, :])
     end
     toc = time()
     print("MPC optimization is done with time: ", ceil(toc - tic), " seconds")
+
+    return L_mpc, P_mpc, E_mpc
 end
-
-
 
 
 
@@ -337,9 +351,9 @@ end
 ####################################################
 # Start MPC optimization
 # Load test data
-stations = first(unique(charging_sessions.station_name), 10)
+stations = first(unique(charging_sessions.station_name), 1)
 start_date = minimum(charging_sessions.session_start_time_la)
-end_date = start_date + Month(3)
+end_date = start_date + Day(1)
 
 data_test = filter(row -> start_date <= row.session_start_time_la <= end_date &&
                               row.station_name in stations, charging_sessions)
@@ -351,8 +365,9 @@ data_test = sort(data_test, [:station_name, :session_start_time_la])
 
 # select method from ["Perfect", "Persistence", "GMM"]
 forecast(data_test, "Perfect")
-show(first(data_test, 1), allcols=true)
-run_mpc(data_test)
+
+L_mpc, P_mpc, E_mpc = run_mpc(data_test)
+
 
 # Plot the results
 hist_AT = histogram(data_test.AT, bins=1:24, alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions", xticks=1:24)
@@ -367,7 +382,23 @@ p_load_MPC = plot(1:N, L_mpc,
          size=(800, 600),  # Set the size of the plot (width, height) in pixels
          dpi=300)          # Set the DPI (dots per inch)
 
-p = plot(hist_AT, hist_DT, p_load_MPC, layout=(3, 1), size=(800, 600), dpi=300)
+p_power_MPC = plot(1:N, P_mpc[:, 1],
+         label="Perfect Forecast MPC sample 1",
+         xlabel="Time Index",
+         ylabel="Power (kW)",
+         title="MPC Power Profile",
+         size=(800, 600),  # Set the size of the plot (width, height) in pixels
+         dpi=300)          # Set the DPI (dots per inch)
+
+p_energy_MPC = plot(1:N, E_mpc[:, 1],
+         label="Perfect Forecast MPC sample 1",
+         xlabel="Time Index",
+         ylabel="Energy (kWh)",
+         title="MPC Energy Profile",
+         size=(800, 600),  # Set the size of the plot (width, height) in pixels
+         dpi=300)          # Set the DPI (dots per inch)
+
+p = plot(hist_AT, hist_DT, p_load_MPC, p_power_MPC, p_energy_MPC, layout=(5, 1), size=(1000, 800), dpi=300)
 
 savefig(p, "Load_MPC.png")
 
