@@ -17,7 +17,7 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Gurobi"]
 
 for package in packages
     Pkg.add(package)
@@ -144,13 +144,16 @@ function run_mpc(data_input::DataFrame)
 
     # Optimize with loop through each time slot b.c. change of objective function
     tic = time()
+    Optimal = zeros(Bool, N)
+    E_tmp = zeros(forecasted_n_EV)
     @showprogress for k in 1:N
+        # TODO: try differnt solvers!!!
         model = Model(Ipopt.Optimizer)
         # Set solver options
         set_optimizer_attribute(model, "max_iter", 1000)  # Set maximum number of iterations
-        set_optimizer_attribute(model, "tol", 1e-6)       # Set tolerance for convergence
-        set_optimizer_attribute(model, "acceptable_tol", 1e-4)  # Set acceptable tolerance
-        set_optimizer_attribute(model, "print_level", 3)  # Set printing level (0: no output, 5: full output)
+        set_optimizer_attribute(model, "tol", 1e-4)       # Set tolerance for convergence
+        set_optimizer_attribute(model, "acceptable_tol", 1e-3)  # Set acceptable tolerance
+        set_optimizer_attribute(model, "print_level", 2)  # Set printing level (0: no output, 5: full output)
 
         @variables model begin
             P[k:N, 1:forecasted_n_EV] >= 0
@@ -171,6 +174,9 @@ function run_mpc(data_input::DataFrame)
 
             if DT_idx[i] >= k
                 @constraint(model, E[DT_idx[i], i] == ED[i])
+                if DT_idx[i] <= N-1
+                    @constraint(model, [t=DT_idx[i]+1:N], P[t, i] == 0)
+                end
             elseif DT_idx[i] < k
                 @constraint(model, [t=k:N], P[t, i] == 0)
             end
@@ -182,9 +188,8 @@ function run_mpc(data_input::DataFrame)
             # Initialize the energy state
             if k == 1
                 @constraint(model, E[k, i] == 0)
-            end
-
-            if k <= N-1
+            elseif k >=2
+                @constraint(model, E[k, i] == E_tmp[i] + P[k, i] * delta_t) #E_tmp is the energy state vector stored at the previous loop of k
                 @constraint(model, [t=k+1:N], E[t, i] == E[t-1, i] + P[t, i] * delta_t)
             end
         end
@@ -206,11 +211,12 @@ function run_mpc(data_input::DataFrame)
             Index_offpeak = k:N
         end        
 
-        # @constraint(model, [t=k:N], gamma_nc_k >= L[t])
-        @constraint(model, [t=k:N], gamma_nc_k == maximum(L[t]))
+        @constraint(model, [t=k:N], gamma_nc_k >= L[t])
+        # @constraint(model, [t=k:N], gamma_nc_k == maximum(L[t])) # This is not working for IPOPT
 
         if !isempty(Index_onpeak)
-            @constraint(model, gamma_onpeak_k == maximum(L[t] for t in Index_onpeak))
+            @constraint(model, [t in Index_onpeak], gamma_onpeak_k >= L[t])
+            # @constraint(model, gamma_onpeak_k == maximum(L[t] for t in Index_onpeak))
         elseif isempty(Index_onpeak)
             @constraint(model, gamma_onpeak_k == 0)
         end
@@ -224,6 +230,7 @@ function run_mpc(data_input::DataFrame)
         @expression(model, energy_charge_k, delta_t * sum(r_energy_offpeak * L[t] for t in Index_offpeak) + 
                                             delta_t * sum(r_energy_onpeak * L[t] for t in Index_onpeak))
 
+                                            
 
         # Define the other charges as an expression
         # TODO: the total energy use in a month is not known and assumed to be the sum of all ED in 30 days
@@ -241,9 +248,13 @@ function run_mpc(data_input::DataFrame)
         L_mpc[k] = value(L[k])
         P_mpc[k, :] = value.(P[k, :])
         E_mpc[k, :] = value.(E[k, :])
+        E_tmp[:] = value.(E[k, :])
+
+        Optimal[k] = (termination_status(model) == MOI.OPTIMAL || termination_status(model) == MOI.LOCALLY_SOLVED) ? 1 : 0
     end
     toc = time()
-    print("MPC optimization is done with time: ", ceil(toc - tic), " seconds")
+    print("MPC optimization is done with time: ", ceil(toc - tic), " seconds\n")
+    print("Optimal Found: ", sum(Optimal), " out of ", N, "\n")
 
     return L_mpc, P_mpc, E_mpc
 end
@@ -353,7 +364,7 @@ end
 # Load test data
 stations = first(unique(charging_sessions.station_name), 1)
 start_date = minimum(charging_sessions.session_start_time_la)
-end_date = start_date + Day(1)
+end_date = start_date + Day(30)
 
 data_test = filter(row -> start_date <= row.session_start_time_la <= end_date &&
                               row.station_name in stations, charging_sessions)
