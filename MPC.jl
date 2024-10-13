@@ -17,7 +17,7 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Gurobi"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays"]
 
 for package in packages
     Pkg.add(package)
@@ -54,10 +54,7 @@ CSV.write("clean_charging_sessions.csv", charging_sessions)
 =#
 
 charging_sessions = CSV.read("clean_charging_sessions.csv", DataFrame)
-
-names(charging_sessions)
 charging_sessions = sort(charging_sessions, [:session_start_time_la])
-show(last(charging_sessions, 6), allcols=true)
 
 
 
@@ -111,8 +108,9 @@ end
 
 ####################################################
 # MPC optimization function
+# TODO: create a new MPC model that includes the station information and handle several EVs charging at the station in the same day
 
-function run_mpc(data_input::DataFrame)
+function run_mpc(data_input::DataFrame, method::String)
     season = get_season(data_input.session_start_time_la[1]) # All daily sessions happen in the same season
 
     # Define rates based on season
@@ -130,27 +128,37 @@ function run_mpc(data_input::DataFrame)
         r_power_onpeak = r_power_midseason_onpeak
     end
 
+    AT = data_input.AT
+    DT = data_input.DT
+    ED = data_input.ED
+    PD = data_input.PD
+    forecasted_n_EV = size(data_input, 1)
+    AT_idx = floor.(Int, AT / T * N)
+    DT_idx = floor.(Int, DT / T * N)
+
+    L_mpc = zeros(N)
+    P_mpc = zeros(N, forecasted_n_EV)
+    E_mpc = zeros(N, forecasted_n_EV)
+    E_tmp = zeros(forecasted_n_EV)
 
     # Optimize with loop through each time slot b.c. change of objective function
-    tic = time()
     Optimal = zeros(Bool, N)
 
     @showprogress for k in 1:N
-        # Data update every time slot
-        update_time = k * delta_t
-        data_arrival = data_input[(data_input.AT .<= update_time), :]
-        AT = data_arrival.AT
-        DT = data_arrival.DT
-        ED = data_arrival.ED
-        PD = data_arrival.PD
-        forecasted_n_EV = size(data_arrival, 1)
-        AT_idx = floor.(Int, AT / T * N)
-        DT_idx = floor.(Int, DT / T * N)
+        # FIXME: Data updater at every time slot
+        if method == "KNN"
 
-        L_mpc = zeros(N)
-        P_mpc = zeros(N, forecasted_n_EV)
-        E_mpc = zeros(N, forecasted_n_EV)
-        E_tmp = zeros(forecasted_n_EV)
+            update_time = k * delta_t
+            data_arrival = data_input[(data_input.AT .<= update_time), :]
+            AT = data_arrival.AT
+            DT = data_arrival.DT
+            ED = data_arrival.ED
+            PD = data_arrival.PD
+            forecasted_n_EV = size(data_arrival, 1)
+            AT_idx = floor.(Int, AT / T * N)
+            DT_idx = floor.(Int, DT / T * N)
+        end
+
 
         model = Model(Ipopt.Optimizer)
         # Set solver options
@@ -237,7 +245,7 @@ function run_mpc(data_input::DataFrame)
                                             
 
         # Define the other charges as an expression
-        # TODO: the total energy use in a month is not known and assumed to be the sum of all ED in 30 days
+        # FIXME: the total energy use in a month is not known and assumed to be the sum of all ED in 30 days
         @expression(model, other_charge_k, 0.0578 * (demand_charge_k + energy_charge_k) +
                         (0.0058 + 0.00058 + 0.0003) * sum(ED[i] for i in 1:forecasted_n_EV) * 30 +
                         0.0688 * DWR_charge)
@@ -256,8 +264,7 @@ function run_mpc(data_input::DataFrame)
 
         Optimal[k] = (termination_status(model) == MOI.OPTIMAL || termination_status(model) == MOI.LOCALLY_SOLVED) ? 1 : 0
     end
-    toc = time()
-    print("MPC optimization is done with time: ", ceil(toc - tic), " seconds\n")
+    # print("MPC optimization is done with time: ", ceil(toc - tic), " seconds\n")
     print("Optimal Found: ", sum(Optimal), " out of ", N, "\n")
 
     return L_mpc, P_mpc, E_mpc
@@ -266,10 +273,11 @@ end
 
 
 ####################################################
-# Forecast is run daily
+# Forecast is run daily and updated with the latest data at each time slot
 
 # Perfect forecast: AT, DT, ED, PD are known, and true data in dataset is used
 # Persistence forecast: AT, DT, ED, PD are the same as the previous daily data
+# KNN forecast: AT, DT, ED, PD are forecasted by KNN
 # GMM forecast: AT, DT, ED, PD are forecasted by GMM model
 
 # Function to compute GMM density
@@ -282,6 +290,21 @@ function gmm_pdf(gmm, x)
         density += weight * pdf(Normal(mu, sigma), x)
     end
     return density
+end
+
+# Function to determine the day type
+function datetype(time::DateTime)
+    day = Dates.dayofweek(time)
+    date = Date(time)
+    usa_holidays = Holidays.UnitedStates()
+    
+    if date in usa_holidays
+        return "holiday"
+    elseif day in 1:5
+        return "weekday"
+    elseif day in 6:7
+        return "weekend"
+    end
 end
 
 
@@ -329,8 +352,8 @@ end
 
 
 # Forecast function
-function forecast(data_input::DataFrame, method::String)
-    forecast_list = ["Perfect", "Persistence", "GMM"]
+function forecast(data_input::DataFrame, method::String, updated_sessions::DataFrame)
+    forecast_list = ["Perfect", "Persistence", "GMM", "Decentralized", "KNN"]
     if method ∉ forecast_list
         error("Invalid forecast method")
     elseif method == "Perfect"
@@ -339,14 +362,13 @@ function forecast(data_input::DataFrame, method::String)
         data_input.DT = ceil.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
         data_input.ED = data_input.total_energy_dispensed
         data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
-        # data_input.forecasted_n_EV .= size(data_input, 1)
-    elseif method == "Persistence" 
+    elseif method == "KNN" 
         # Use the last closest day's data as the forecast
         data_input.AT = zeros(nrow(data_input))
         data_input.DT = zeros(nrow(data_input))
         data_input.ED = zeros(nrow(data_input))
         data_input.PD = zeros(nrow(data_input))
-        data_input.forecasted_n_EV .= zeros(Int, nrow(data_input))
+        # FIXME: N_EV should be updated?
 
         for i in 1:nrow(data_input)
             target_time = data_input.session_start_time_la[i]
@@ -367,43 +389,96 @@ function forecast(data_input::DataFrame, method::String)
 
             # data_input.forecasted_n_EV[i] = i
         end
+    elseif method == "Persistence"
+        # Just do the MPC with data from the previous smart day (weekday, weekend, holiday)
+        # FIXME: N_EV should be updated?
+        target_time = data_input.session_start_time_la[1]
+        target_day_type = datetype(target_time)
+        same_type_sessions = updated_sessions[(updated_sessions.type .== target_day_type) .& (Date.(updated_sessions.session_start_time_la) .< Date(target_time)), :]
+        if nrow(same_type_sessions) == 0
+            error("No valid sessions found for the same day type")
+        end
+
+        closest_idx = argmin(abs.(Date.(same_type_sessions.session_start_time_la) .- Date(target_time)))
+        closest_date = Date(same_type_sessions.session_start_time_la[closest_idx])
+        persistence_sessions = same_type_sessions[Date.(same_type_sessions.session_start_time_la) .== closest_date, :]
+
+        data_input = persistence_sessions
+        data_input.AT = ceil.(Float64.(Dates.hour.(data_input.session_start_time_la)) + Float64.(Dates.minute.(data_input.session_start_time_la)) / 60, digits=2)
+        data_input.DT = ceil.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
+        data_input.ED = data_input.total_energy_dispensed
+        data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
+
     elseif method == "GMM"
         data_input.AT, data_input.DT, data_input.ED, data_input.PD = predict_gmm(data_input) 
-        data_input.forecasted_n_EV .= size(data_input, 1)
+
+    elseif method == "Decentralized" # TODO: Talk with Avik
+        data_input.AT = zeros(nrow(data_input))
     end
 
     return data_input
 end
 
+# V0G for comparison
+function run_V0G(data_input::DataFrame)
+    L_V0G = zeros(N)
+    P_V0G = zeros(N, size(data_input, 1))
+    data_input.AT = ceil.(Float64.(Dates.hour.(data_input.session_start_time_la)) + Float64.(Dates.minute.(data_input.session_start_time_la)) / 60, digits=2)
+    data_input.DT = ceil.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
+    data_input.ED = data_input.total_energy_dispensed
 
-# Shrinking MPC is run daily
-# TODO: 我现在在实时更新 每一辆车来了后计算他的ED,DT 其实并没有用到forecast_EV persistence如果简单用昨天的数据的话毫无意义啊
-# 但是现在的forecast_EV 每一次loop都不一样 每一次的优化对吗？
+    for k in 1:N
+        for i in 1:size(data_input, 1)
+            Energy_dispensed = sum(P_V0G[1:k, i]) * delta_t
+            # Assume more energy can be dispensed than the actual data
+            if data_input.AT[i] <= k * delta_t && k * delta_t <= data_input.DT[i] && Energy_dispensed < data_input.ED[i]
+                P_V0G[k, i] = P_max
+            else
+                P_V0G[k, i] = 0
+            end
+        end
+    end
 
-function daily_update(data_input::DataFrame)
+    L_V0G = sum(P_V0G, dims=2)
+    return L_V0G
+end
+
+
+# Daily update main function
+function daily_update(data_input::DataFrame, method::String)
     days = unique(Date.(data_input.session_start_time_la))
-    global updated_sessions = charging_sessions
+    updated_sessions = charging_sessions
+    updated_sessions.type = datetype.(updated_sessions.session_start_time_la)
     L_mpc_dict = Dict{Date, Any}()
     P_mpc_dict = Dict{Date, Any}()
     E_mpc_dict = Dict{Date, Any}()
+    L_V0G_dict = Dict{Date, Any}()
 
+    tic = time()
     for day in days
         data_tmp = filter(row -> Dates.Date(row.session_start_time_la) == day, data_input)
-        global updated_sessions = vcat(updated_sessions, data_tmp)
-        data_tmp = forecast(data_tmp, "Persistence")
-        L_mpc_tmp, P_mpc_tmp, E_mpc_tmp = run_mpc(data_tmp)
+        L_V0G_dict[day] = run_V0G(data_tmp)
+        data_tmp = forecast(data_tmp, method, updated_sessions)
+        new_sessions = select(data_tmp, Not([:AT, :DT, :ED, :PD]))
+        new_sessions.type = datetype.(new_sessions.session_start_time_la)
+        updated_sessions = vcat(updated_sessions, new_sessions)
+        L_mpc_tmp, P_mpc_tmp, E_mpc_tmp = run_mpc(data_tmp, method)
 
         println("Day: ", day, " L_mpc_tmp size: ", size(L_mpc_tmp))
         println("Day: ", day, " P_mpc_tmp size: ", size(P_mpc_tmp))
         println("Day: ", day, " E_mpc_tmp size: ", size(E_mpc_tmp))
-
         L_mpc_dict[day] = L_mpc_tmp
         P_mpc_dict[day] = P_mpc_tmp
         E_mpc_dict[day] = E_mpc_tmp
+
     end
+    toc = time()
+    print("Daily update is done with time: ", ceil(toc - tic), " seconds\n")
     
-    return L_mpc_dict, P_mpc_dict, E_mpc_dict
+    return L_V0G_dict, L_mpc_dict, P_mpc_dict, E_mpc_dict, days
 end
+
+
 
 
 
@@ -412,79 +487,59 @@ end
 # Test data is unknown with all other data known
 test_sessions = CSV.read("clean_test_sessions.csv", DataFrame)
 test_sessions = sort(test_sessions, [:session_start_time_la])
-start_date = minimum(test_sessions.session_start_time_la)
-end_date = start_date + Day(3)
+start_date = Date(minimum(test_sessions.session_start_time_la))
+end_date = start_date + Day(2)
 data_test = filter(row -> start_date <= row.session_start_time_la <= end_date, test_sessions)
 data_test = sort(data_test, [:session_start_time_la])
 
 # TODO: For testing
 data_input = data_test
+method = "Persistence"
 
-# TODO: select method from ["Perfect", "Persistence", "GMM"]
-L_mpc_all, P_mpc_all, E_mpc_all = daily_update(data_test)
-
-####TODO: V0G for comparison, verification of energy
-function run_V0G(data_input::DataFrame)
-
-
-end
-
+# TODO: select method from ["Perfect", "Persistence", "GMM", "Decentralized", "KNN"]
+L_V0G_all, L_mpc_perfect, P_mpc_perfect, E_mpc_perfect, days = daily_update(data_test, "Perfect")
+L_V0G_all, L_mpc_persistence, P_mpc_persistence, E_mpc_persistence, days = daily_update(data_test, "Persistence")
 
 
 
 ####################################################
-# Plot the daily test results
+# FIXME: Plot the test results in sequence
 
-hist_AT = histogram(data_test.session_start_time_la, bins = nrow(data_test), alpha=0.5, label="AT", xlabel="AT", ylabel="Number of Sessions")
+hist_AT = histogram(data_test.session_start_time_la, bins = nrow(data_test), alpha=0.5, label="AT", xlabel="AT", ylabel="Sessions")
 
-hist_DT = histogram(data_test.session_end_time_la, bins = nrow(data_test), alpha=0.5, label="DT", xlabel="DT", ylabel="Number of Sessions")
+hist_DT = histogram(data_test.session_end_time_la, bins = nrow(data_test), alpha=0.5, label="DT", xlabel="DT", ylabel="Sessions")
 
-p_load_MPC = plot(keys(L_mpc_all), values(L_mpc_all),
+df_load_perfect = DataFrame(time = 1:N*length(days), load = vcat(values(L_mpc_perfect)...))
+df_load_persistence = DataFrame(time = 1:N*length(days), load = vcat(values(L_mpc_persistence)...))
+df_load_V0G  = DataFrame(time = 1:N*length(days), load = vec(vcat(values(L_V0G_all)...)))
+
+p_load_perfect = plot(df_load_mpc.time, df_load_mpc.load,
          label="Perfect Forecast MPC",
          xlabel="Time Index",
          ylabel="Load (kW)",
          title="MPC Load Profile",
-         size=(800, 600),  # Set the size of the plot (width, height) in pixels
-         dpi=300)          # Set the DPI (dots per inch)
+         size=(800, 600), 
+         dpi=300)          
+
+p_load_persistence = plot(df_load_persistence.time, df_load_persistence.load,
+            label="Persistence Forecast MPC",
+            xlabel="Time Index",
+            ylabel="Load (kW)",
+            title="MPC Load Profile",
+            size=(800, 600),  
+            dpi=300)         
 
 
-values(L_mpc_all)
-
-
-p_load_MPC = plot(1:N, L_mpc,
-         label="Perfect Forecast MPC",
+p_load_V0G = plot(df_load_V0G.time, df_load_V0G.load,
+         label="V0G",
          xlabel="Time Index",
          ylabel="Load (kW)",
-         title="MPC Load Profile",
-         size=(800, 600),  # Set the size of the plot (width, height) in pixels
-         dpi=300)          # Set the DPI (dots per inch)
+         title="V0G Load Profile",
+         size=(800, 600),  
+         dpi=300)         
 
-p_power_MPC = plot(1:N, P_mpc[:, 1],
-         label="Perfect Forecast MPC sample 1",
-         xlabel="Time Index",
-         ylabel="Power (kW)",
-         title="MPC Power Profile",
-         size=(800, 600),  # Set the size of the plot (width, height) in pixels
-         dpi=300)          # Set the DPI (dots per inch)
+p = plot(hist_AT, hist_DT, p_load_perfect, p_load_persistence, p_load_V0G, layout=(5, 1), size=(1000, 800))
 
-p_energy_MPC = plot(1:N, E_mpc[:, 1],
-         label="Perfect Forecast MPC sample 1",
-         xlabel="Time Index",
-         ylabel="Energy (kWh)",
-         title="MPC Energy Profile",
-         size=(800, 600),  # Set the size of the plot (width, height) in pixels
-         dpi=300)          # Set the DPI (dots per inch)
-
-
-
-p_load_V0G = 
-
-p_power_V0G = 
-
-p_energy_V0G =
-
-p = plot(hist_AT, hist_DT, p_load_MPC, p_power_MPC, p_energy_MPC, layout=(5, 1), size=(1000, 800), dpi=300)
-
-savefig(p, "Load_MPC.png")
+savefig(p, "Load_All.png")
 
 
