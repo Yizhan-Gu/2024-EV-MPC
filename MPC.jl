@@ -7,9 +7,8 @@ Email: yig031@ucsd.edu
 All rights reserved
 =#
 
-
 ####################################################
-# Testing if Julia works and set working directory
+# SECTION: Testing if Julia works and set working directory
 print("hello world")
 cd("/Users/admin/Desktop/EV_program/2024Summer_EVResearch")
 print(pwd())
@@ -17,7 +16,7 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays", "AutoMLPipeline"]
 
 for package in packages
     Pkg.add(package)
@@ -107,7 +106,7 @@ end
 
 
 ####################################################
-# MPC optimization function
+# SECTION: MPC optimization function
 # TODO: create a new MPC model that includes the station information and handle several EVs charging at the station in the same day
 
 function run_mpc(data_input::DataFrame, method::String)
@@ -133,7 +132,7 @@ function run_mpc(data_input::DataFrame, method::String)
     ED = data_input.ED
     PD = data_input.PD
     forecasted_n_EV = size(data_input, 1)
-    AT_idx = floor.(Int, AT / T * N)
+    AT_idx = floor.(Int, AT / T * N) .+ 1
     DT_idx = floor.(Int, DT / T * N)
 
     L_mpc = zeros(N)
@@ -145,7 +144,7 @@ function run_mpc(data_input::DataFrame, method::String)
     Optimal = zeros(Bool, N)
 
     @showprogress for k in 1:N
-        # FIXME: Data updater at every time slot
+        # FIXME: Data updater at every time step
         if method == "KNN"
 
             update_time = k * delta_t
@@ -155,7 +154,7 @@ function run_mpc(data_input::DataFrame, method::String)
             ED = data_arrival.ED
             PD = data_arrival.PD
             forecasted_n_EV = size(data_arrival, 1)
-            AT_idx = floor.(Int, AT / T * N)
+            AT_idx = floor.(Int, AT / T * N) .+ 1 # shorten the PD for assumption
             DT_idx = floor.(Int, DT / T * N)
         end
 
@@ -262,6 +261,8 @@ function run_mpc(data_input::DataFrame, method::String)
         E_mpc[k, :] = value.(E[k, :])
         E_tmp = E_mpc[k, :] # Update the energy state vector for the next loop
 
+        # TODO: export the total cost and compare
+
         Optimal[k] = (termination_status(model) == MOI.OPTIMAL || termination_status(model) == MOI.LOCALLY_SOLVED) ? 1 : 0
     end
     # print("MPC optimization is done with time: ", ceil(toc - tic), " seconds\n")
@@ -362,13 +363,29 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
         data_input.DT = ceil.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
         data_input.ED = data_input.total_energy_dispensed
         data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
-    elseif method == "KNN" 
-        # Use the last closest day's data as the forecast
+    elseif method == "KNN"
         data_input.AT = zeros(nrow(data_input))
         data_input.DT = zeros(nrow(data_input))
         data_input.ED = zeros(nrow(data_input))
         data_input.PD = zeros(nrow(data_input))
         # FIXME: N_EV should be updated?
+
+        target_time = data_input.session_start_time_la[1]
+        target_day_type = datetype(target_time)
+        same_type_sessions = updated_sessions[(updated_sessions.type .== target_day_type) .& (Date.(updated_sessions.session_start_time_la) .< Date(target_time)), :]
+        if nrow(same_type_sessions) == 0
+            error("No valid sessions found for the same day type")
+        end
+
+        closest_idx = argmin(abs.(Date.(same_type_sessions.session_start_time_la) .- Date(target_time)))
+        closest_date = Date(same_type_sessions.session_start_time_la[closest_idx])
+        persistence_sessions = same_type_sessions[Date.(same_type_sessions.session_start_time_la) .== closest_date, :]
+
+
+
+
+
+
 
         for i in 1:nrow(data_input)
             target_time = data_input.session_start_time_la[i]
@@ -391,7 +408,6 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
         end
     elseif method == "Persistence"
         # Just do the MPC with data from the previous smart day (weekday, weekend, holiday)
-        # FIXME: N_EV should be updated?
         target_time = data_input.session_start_time_la[1]
         target_day_type = datetype(target_time)
         same_type_sessions = updated_sessions[(updated_sessions.type .== target_day_type) .& (Date.(updated_sessions.session_start_time_la) .< Date(target_time)), :]
@@ -483,6 +499,7 @@ end
 
 
 ####################################################
+# SECTION: Testing
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 # Test data is unknown with all other data known
 test_sessions = CSV.read("clean_test_sessions.csv", DataFrame)
@@ -503,42 +520,33 @@ L_V0G_all, L_mpc_persistence, P_mpc_persistence, E_mpc_persistence, days = daily
 
 
 ####################################################
-# FIXME: Plot the test results in sequence
+# SECTION: Plot the test results in time order
 
-hist_AT = histogram(data_test.session_start_time_la, bins = nrow(data_test), alpha=0.5, label="AT", xlabel="AT", ylabel="Sessions")
+hist_AT = histogram(data_test.session_start_time_la, bins = length(days) * N, alpha=0.5, label="AT", xlabel="AT", ylabel="Sessions")
 
-hist_DT = histogram(data_test.session_end_time_la, bins = nrow(data_test), alpha=0.5, label="DT", xlabel="DT", ylabel="Sessions")
+hist_DT = histogram(data_test.session_end_time_la, bins = length(days) * N, alpha=0.5, label="DT", xlabel="DT", ylabel="Sessions")
 
-df_load_perfect = DataFrame(time = 1:N*length(days), load = vcat(values(L_mpc_perfect)...))
-df_load_persistence = DataFrame(time = 1:N*length(days), load = vcat(values(L_mpc_persistence)...))
-df_load_V0G  = DataFrame(time = 1:N*length(days), load = vec(vcat(values(L_V0G_all)...)))
+df_load_perfect = DataFrame(time = [DateTime(minimum(days)) + Minute(15 * (i - 1)) for i in 1:N * length(days)], load = vcat(values(L_mpc_perfect)...))
+df_load_persistence = DataFrame(time = [DateTime(minimum(days)) + Minute(15 * (i - 1)) for i in 1:N * length(days)], load = vcat(values(L_mpc_persistence)...))
+df_load_V0G  = DataFrame(time = [DateTime(minimum(days)) + Minute(15 * (i - 1)) for i in 1:N * length(days)], load = vec(vcat(values(L_V0G_all)...)))
 
-p_load_perfect = plot(df_load_mpc.time, df_load_mpc.load,
-         label="Perfect Forecast MPC",
-         xlabel="Time Index",
-         ylabel="Load (kW)",
-         title="MPC Load Profile",
-         size=(800, 600), 
-         dpi=300)          
+p_load_combined = plot(df_load_perfect.time, df_load_perfect.load,
+    label="Perfect Forecast MPC",
+    xlabel="Timestamp",
+    ylabel="Load (kW)",
+    size=(800, 600),
+    dpi=300,
+    legend=:topright)
 
-p_load_persistence = plot(df_load_persistence.time, df_load_persistence.load,
-            label="Persistence Forecast MPC",
-            xlabel="Time Index",
-            ylabel="Load (kW)",
-            title="MPC Load Profile",
-            size=(800, 600),  
-            dpi=300)         
+# Add Persistence Forecast load to the same plot
+plot!(df_load_persistence.time, df_load_persistence.load,
+    label="Persistence Forecast MPC")
 
+# Add V0G load to the same plot
+plot!(df_load_V0G.time, df_load_V0G.load,
+    label="V0G")   
 
-p_load_V0G = plot(df_load_V0G.time, df_load_V0G.load,
-         label="V0G",
-         xlabel="Time Index",
-         ylabel="Load (kW)",
-         title="V0G Load Profile",
-         size=(800, 600),  
-         dpi=300)         
-
-p = plot(hist_AT, hist_DT, p_load_perfect, p_load_persistence, p_load_V0G, layout=(5, 1), size=(1000, 800))
+p = plot(hist_AT, hist_DT, p_load_combined, layout=(3, 1), size=(1000, 800))
 
 savefig(p, "Load_All.png")
 
