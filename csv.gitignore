@@ -1,0 +1,4 @@
+# Ignore specific files
+#large_file.dat
+# Ignore all files with a certain extension
+*.csv
