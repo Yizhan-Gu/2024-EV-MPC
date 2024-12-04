@@ -187,19 +187,18 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
                     error("Noforecast method should have the same as perfect forecast")
                 elseif isempty(arrived_sessions_forecast)
                     data_forecast_update = copy(data_input)
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
+                    data_forecast_update.AT .= min.(data_forecast_update.AT .+ 5, 23.99)
+                    data_forecast_update.DT .= min.(data_forecast_update.DT .+ 5, 23.99)
                 elseif !isempty(arrived_sessions_forecast)
                     data_forecast_update = copy(arrived_sessions_forecast)
                 end
             elseif (method == "Persistence+KNN" || method == "Statistic+KNN")
                 if isempty(arrived_sessions_today)
                     data_forecast_update = copy(data_input)
-                    # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
+                    # postpone time so that unarrived EVs are not charged
+                    data_forecast_update.AT .= min.(data_forecast_update.AT .+ delta_t, 23.99)
+                    data_forecast_update.DT .= min.(data_forecast_update.DT .+ 5, 23.99)
+                    # data_forecast_update.ED .= 0
                 elseif !isempty(arrived_sessions_today)
                     # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
                     arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)

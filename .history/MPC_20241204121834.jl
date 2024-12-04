@@ -196,7 +196,7 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
             elseif (method == "Persistence+KNN" || method == "Statistic+KNN")
                 if isempty(arrived_sessions_today)
                     data_forecast_update = copy(data_input)
-                    # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
+                    # postpone time so that unarrived EVs are not charged
                     # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
                     # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
                     data_forecast_update.ED .= 0

@@ -169,7 +169,7 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
         if (method == "Perfect")
             data_forecast_update = copy(data_input)
         # Real-time update at every time step: only arrived EVs can be charged and considered in the MPC
-        else
+        elseif (method == "Persistence+KNN" || method == "Statistic+KNN" || method == "Noforecast")
             data_forecast_update = DataFrame()
             update_time = (k - 1) * delta_t
             last_step_time = (k - 2) * delta_t
@@ -181,55 +181,47 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
             arrived_sessions_today.PD = zeros(size(arrived_sessions_today, 1))
 
             arrived_sessions_step = filter(row -> last_step_time < row.AT <= update_time, data_today)
+            arrived_sessions_step_forecast = filter(row -> last_step_time < row.AT <= update_time, data_input)
 
-            if method == "Noforecast"
-                if !all(arrived_sessions_forecast.AT .== arrived_sessions_today.AT)
-                    error("Noforecast method should have the same as perfect forecast")
+            if isempty(arrived_sessions_today)
+                data_forecast_update = copy(data_input)
+                # postpone time so that unarrived EVs are not charged
+                data_forecast_update.AT .= min.(data_forecast_update.AT .+ delta_t * k, 24)
+                data_forecast_update.DT .= min.(data_forecast_update.DT .+ delta_t * k, 24)
+                # data_forecast_update.ED .= 0
+            elseif !isempty(arrived_sessions_today)
+                # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
+                arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
+                arrived_sessions_today.ED = arrived_sessions_today.total_energy_dispensed
+                arrived_sessions_today.PD = ceil.(Dates.value.(arrived_sessions_today.charging_end_time_la - arrived_sessions_today.session_start_time_la) / (3600*1000), digits=2)
+
+                #= VERSION: Assume only real AT is known after arrival of EVs
+                for i in 1:size(arrived_sessions_today, 1)
+                    closest_idx = argmin(abs.(arrived_sessions_forecast.AT .- arrived_sessions_today.AT[i]))
+                    arrived_sessions_today.PD[i] = arrived_sessions_forecast.PD[closest_idx]
+                    arrived_sessions_today.DT[i] = arrived_sessions_today.PD[i] + arrived_sessions_today.AT[i]
+                    if method == "Persistence+KNN"
+                        arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx]
+                    elseif method == "Statistic+KNN"
+                        arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx] * M # Difference
+                    end
+                end
+                =#
+
+                noarrived_sessions_forecast = filter(row -> row.AT > update_time, data_input) 
+                if !isempty(arrived_sessions_forecast)
+                    # Instead of changing EV number, change the ED of the forecasted EVs
+                    noarrived_sessions_forecast.ED = noarrived_sessions_forecast.ED * size(arrived_sessions_today, 1) / size(arrived_sessions_forecast, 1)
                 elseif isempty(arrived_sessions_forecast)
-                    data_forecast_update = copy(data_input)
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
-                elseif !isempty(arrived_sessions_forecast)
-                    data_forecast_update = copy(arrived_sessions_forecast)
+                    # Double the ED of the forecasted EVs for simplicity
+                    noarrived_sessions_forecast.ED = noarrived_sessions_forecast.ED * 2
                 end
-            elseif (method == "Persistence+KNN" || method == "Statistic+KNN")
-                if isempty(arrived_sessions_today)
-                    data_forecast_update = copy(data_input)
-                    # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
-                elseif !isempty(arrived_sessions_today)
-                    # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
-                    arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
-                    arrived_sessions_today.ED = arrived_sessions_today.total_energy_dispensed
-                    arrived_sessions_today.PD = ceil.(Dates.value.(arrived_sessions_today.charging_end_time_la - arrived_sessions_today.session_start_time_la) / (3600*1000), digits=2)
-
-                    #= VERSION: Assume only real AT is known after arrival of EVs
-                    for i in 1:size(arrived_sessions_today, 1)
-                        closest_idx = argmin(abs.(arrived_sessions_forecast.AT .- arrived_sessions_today.AT[i]))
-                        arrived_sessions_today.PD[i] = arrived_sessions_forecast.PD[closest_idx]
-                        arrived_sessions_today.DT[i] = arrived_sessions_today.PD[i] + arrived_sessions_today.AT[i]
-                        if method == "Persistence+KNN"
-                            arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx]
-                        elseif method == "Statistic+KNN"
-                            arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx] * M # Difference
-                        end
-                    end
-                    =#
-
-                    noarrived_sessions_forecast = filter(row -> row.AT > update_time, data_input) 
-                    if !isempty(arrived_sessions_forecast)
-                        # Instead of changing EV number, change the ED of the forecasted EVs
-                        noarrived_sessions_forecast.ED = noarrived_sessions_forecast.ED * size(arrived_sessions_today, 1) / size(arrived_sessions_forecast, 1)
-                    elseif isempty(arrived_sessions_forecast)
-                        # Increase ED of the forecasted EVs
-                        noarrived_sessions_forecast.ED = noarrived_sessions_forecast.ED * (1 + k / N)
-                    end
-
-                    data_forecast_update = vcat(arrived_sessions_today, noarrived_sessions_forecast)
+                
+                if isempty(arrived_sessions_step)
+                    noarrived_sessions_forecast.AT .= min.(noarrived_sessions_forecast.AT .+ delta_t * k, 24)
+                    noarrived_sessions_forecast.DT .= min.(noarrived_sessions_forecast.DT .+ delta_t * k, 24)
                 end
+                data_forecast_update = vcat(arrived_sessions_today, noarrived_sessions_forecast)
             end
         end
 
@@ -247,7 +239,7 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
         if N_ev >= N_ev_last
             flag = "more"
         elseif N_ev < N_ev_last
-            flag = "fewer"
+            flag = "fewer" # Always for statistic+KNN
         end
 
         @variables model begin
@@ -263,12 +255,13 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
         # @constraint(model, [t=k:N, i=1:N_ev], P[t, i] <= M * (t <= DT_idx[i]))
 
 
-        AT = data_forecast_update.AT # 0.00-23.99
-        DT = data_forecast_update.DT # 0.00-23.98
+        AT = data_forecast_update.AT
+        DT = data_forecast_update.DT
         ED = data_forecast_update.ED
         PD = data_forecast_update.PD
-        AT_idx = ceil.(Int, AT / T * N) .+ 1 # Note: idx can only be 1-97 for comparison with k
-        DT_idx = floor.(Int, DT / T * N) .+ 1 # 1-96
+        AT_idx = ceil.(Int, AT / T * N)
+        DT_idx = floor.(Int, DT / T * N)
+
 
         if k == 1
             @constraint(model, [i=1:N_ev], E[k, i] == 0)
@@ -304,7 +297,6 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
             # @constraint(model, [t=k:N], E[t, i] <= ED[i])
             @constraint(model, [t=k:N], 0 <= P[t, i] <= P_max)
             if AT_idx[i] > DT_idx[i]
-                print(AT_idx, "\n", DT_idx, "\n", k, "\n")
                 error("AT should be less than DT")
             # elseif AT_idx[i] == DT_idx[i]
                 # @constraint(model, [t=k:N], P[t, i] == 0)
@@ -365,10 +357,12 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
         # TODO: Some details of the other charges are not clear
         @expression(model, E_total, sum(ED[i] for i in 1:N_ev))
 
-        # @expression(model, other_charge_k, 0.0578 * (demand_charge_k + energy_charge_k) + (0.0058 + 0.00058 + 0.0003) * E_total + 0.0688 * DWR_charge)
+        @expression(model, other_charge_k, 0.0578 * (demand_charge_k + energy_charge_k) +
+                        (0.0058 + 0.00058 + 0.0003) * E_total +
+                        0.0688 * DWR_charge)
 
         # Define the objective function as an expression
-        @expression(model, J_k, demand_charge_k + energy_charge_k)
+        @expression(model, J_k, demand_charge_k + energy_charge_k + other_charge_k)
 
         @objective(model, Min, J_k)
 
@@ -479,7 +473,6 @@ function predict_gmm(data_input)
 
     return predict_gmm_AT, predict_gmm_DT, predict_gmm_ED, predict_gmm_PD
 end
-
 
 
 ####################################################
@@ -611,21 +604,17 @@ function daily_update(data_input::DataFrame, method::String)
 end
 
 
+
 ####################################################
 # SECTION: Testing
 # https://github.com/rdeits/DynamicWalking2018.jl/blob/master/notebooks/6.%20Optimization%20with%20JuMP.ipynb
 # Test data is unknown with all other data known
 test_sessions = CSV.read("clean_test_sessions.csv", DataFrame)
-test_sessions_filtered = filter(row -> 
-    (Dates.hour(row.session_end_time_la) + Dates.minute(row.session_end_time_la) / 60) - 
-    (Dates.hour(row.session_start_time_la) + Dates.minute(row.session_start_time_la) / 60) > 0.25,
-    test_sessions)
 test_sessions = sort(test_sessions, [:session_start_time_la])
 start_date = Date(minimum(test_sessions.session_start_time_la)) + Day(2)
 end_date = start_date + Day(1)
 data_test = filter(row -> start_date <= row.session_start_time_la <= end_date, test_sessions)
 data_test = sort(data_test, [:session_start_time_la])
-
 
 # TODO: For testing
 data_input = copy(data_test)
@@ -704,14 +693,14 @@ function daily_energy()
     Energy_noforecast = Dict{Date, Float64}()
     Energy_persistence_knn = Dict{Date, Float64}()
     Energy_statistic_knn = Dict{Date, Float64}()
-    for today_update in days
-        data_today = data_test[Date.(data_test.session_start_time_la) .== today_update, :]
-        Energy_real[today_update] = sum(data_today.total_energy_dispensed)
-        Energy_V0G[today_update] = sum(L_V0G[today_update]) * delta_t
-        Energy_perfect[today_update] = sum(L_mpc_perfect[today_update]) * delta_t
-        Energy_noforecast[today_update] = sum(L_mpc_noforecast[today_update]) * delta_t
-        Energy_persistence_knn[today_update] = sum(L_mpc_persistence_knn[today_update]) * delta_t
-        Energy_statistic_knn[today_update] = sum(L_mpc_statistic_knn[today_update]) * delta_t
+    for today in days
+        data_today = data_test[Date.(data_test.session_start_time_la) .== today, :]
+        Energy_real[today] = sum(data_today.total_energy_dispensed)
+        Energy_V0G[today] = sum(L_V0G[today]) * delta_t
+        Energy_perfect[today] = sum(L_mpc_perfect[today]) * delta_t
+        Energy_noforecast[today] = sum(L_mpc_noforecast[today]) * delta_t
+        Energy_persistence_knn[today] = sum(L_mpc_persistence_knn[today]) * delta_t
+        Energy_statistic_knn[today] = sum(L_mpc_statistic_knn[today]) * delta_t
     end
     df_energy_all = DataFrame(
     day = days,
@@ -729,13 +718,13 @@ df_energy_all = daily_energy()
 CSV.write("Energy.csv", df_energy_all)
 
 
+
 # Cost calculation
-function daily_cost(Load_input)
+function daily_cost(Load_input::Dict{Date, Array{Float64, 1}})
     Cost_dict = Dict{Date, Any}()
-    for i in 1:length(days)
-        today_update = days[i]
+    for today in days
         cost = 0.0
-        season = get_season(DateTime(today_update))
+        season = get_season(DateTime(today))
         if season == "summer"
             r_energy_onpeak = r_energy_summer_onpeak
             r_energy_offpeak = r_energy_summer_offpeak
@@ -750,7 +739,7 @@ function daily_cost(Load_input)
             r_power_onpeak = r_power_midseason_onpeak
         end
 
-        L_daily = Load_input[today_update]
+        L_daily = Load_input[today]
         Index_onpeak = T_start_idx:T_end_idx
         Index_offpeak = vcat(1:T_start_idx-1, T_end_idx+1:N)
         gamma_nc = maximum(L_daily[t] for t in 1:N)
@@ -758,9 +747,11 @@ function daily_cost(Load_input)
         demand_charge = r_power_nc * gamma_nc + r_power_onpeak * gamma_onpeak
         energy_charge = delta_t * sum(r_energy_offpeak * L_daily[t] for t in Index_offpeak) + 
                                             delta_t * sum(r_energy_onpeak * L_daily[t] for t in Index_onpeak)
-        # other_charge = 0.0578 * (demand_charge + energy_charge) + (0.0058 + 0.00058 + 0.0003) * df_energy_all.Real[i] + 0.0688 * DWR_charge
-        cost = demand_charge + energy_charge
-        Cost_dict[today_update] = cost
+        other_charge = 0.0578 * (demand_charge + energy_charge) +
+                        (0.0058 + 0.00058 + 0.0003) * real_ED +
+                        0.0688 * DWR_charge
+        cost = demand_charge + energy_charge + other_charge
+        Cost_dict[today] = cost
     end
     return Cost_dict
 end

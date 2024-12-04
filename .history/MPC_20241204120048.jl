@@ -183,23 +183,22 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
             arrived_sessions_step = filter(row -> last_step_time < row.AT <= update_time, data_today)
 
             if method == "Noforecast"
-                if !all(arrived_sessions_forecast.AT .== arrived_sessions_today.AT)
+                if !isequal(arrived_sessions_forecast, arrived_sessions_today)
                     error("Noforecast method should have the same as perfect forecast")
                 elseif isempty(arrived_sessions_forecast)
                     data_forecast_update = copy(data_input)
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
+                    data_forecast_update.AT .= min.(data_forecast_update.AT .+ 5, 23.99)
+                    data_forecast_update.DT .= min.(data_forecast_update.DT .+ 5, 23.99)
                 elseif !isempty(arrived_sessions_forecast)
                     data_forecast_update = copy(arrived_sessions_forecast)
                 end
             elseif (method == "Persistence+KNN" || method == "Statistic+KNN")
                 if isempty(arrived_sessions_today)
                     data_forecast_update = copy(data_input)
-                    # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
+                    # postpone time so that unarrived EVs are not charged
+                    data_forecast_update.AT .= min.(data_forecast_update.AT .+ 5, 23.99)
+                    data_forecast_update.DT .= min.(data_forecast_update.DT .+ 5, 23.99)
+                    # data_forecast_update.ED .= 0
                 elseif !isempty(arrived_sessions_today)
                     # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
                     arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
@@ -267,8 +266,8 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
         DT = data_forecast_update.DT # 0.00-23.98
         ED = data_forecast_update.ED
         PD = data_forecast_update.PD
-        AT_idx = ceil.(Int, AT / T * N) .+ 1 # Note: idx can only be 1-97 for comparison with k
-        DT_idx = floor.(Int, DT / T * N) .+ 1 # 1-96
+        AT_idx = ceil.(Int, AT / T * N) .+ 1 # Note: idx can only be 1-96 for comparison with k
+        DT_idx = floor.(Int, DT / T * N) .+ 1
 
         if k == 1
             @constraint(model, [i=1:N_ev], E[k, i] == 0)
@@ -304,7 +303,6 @@ function run_mpc_ev(data_input::DataFrame, data_today::DataFrame, method::String
             # @constraint(model, [t=k:N], E[t, i] <= ED[i])
             @constraint(model, [t=k:N], 0 <= P[t, i] <= P_max)
             if AT_idx[i] > DT_idx[i]
-                print(AT_idx, "\n", DT_idx, "\n", k, "\n")
                 error("AT should be less than DT")
             # elseif AT_idx[i] == DT_idx[i]
                 # @constraint(model, [t=k:N], P[t, i] == 0)
