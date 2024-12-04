@@ -93,15 +93,12 @@ write_csv(data, "clean_charging_sessions.csv")
 
 
 
-
-
-
 #################################################################################
 # Update latest dataset to 2024 Sep
 raw_data_new <- read_csv("CP_UCSD_raw_Jul16_Sep24.csv")
 data_new <- raw_data_new %>% 
-  select("User ID", "Start Date", "End Date", "Energy (kWh)", "Charging Time (hh:mm:ss)", "Station Name") %>% 
-  rename(driver_id = "User ID", total_energy_dispensed = "Energy (kWh)", session_start_time_la = "Start Date", session_end_time_la = "End Date", charging_time_secs = "Charging Time (hh:mm:ss)", station_name = "Station Name") %>% 
+  select("User ID", "Start Date", "End Date", "Energy (kWh)", "Charging Time (hh:mm:ss)", "Station Name", "Port Number") %>% 
+  rename(driver_id = "User ID", total_energy_dispensed = "Energy (kWh)", session_start_time_la = "Start Date", session_end_time_la = "End Date", charging_time_secs = "Charging Time (hh:mm:ss)", station_name = "Station Name", port = "Port Number") %>% 
   mutate(session_start_time_la = mdy_hm(session_start_time_la), session_end_time_la = mdy_hm(session_end_time_la)) %>% 
   mutate(charging_time_secs = as.numeric(lubridate::hms(charging_time_secs))) %>% 
   mutate(charging_end_time_la = charging_time_secs + session_start_time_la) %>% 
@@ -154,9 +151,9 @@ data_new$session_end_time_la <- format(data_new$session_end_time_la, format="%Y-
 data_new$charging_end_time_la <- format(data_new$charging_end_time_la, format="%Y-%m-%dT%H:%M:%S")
 
 data_train <- filter(data_new, year(session_start_time_la) < 2023)
-data_test <- filter(data_new, year(session_start_time_la) >= 2023)
+data_test <- filter(data_new, year(session_start_time_la) >= 2023, month(session_start_time_la) <= 9)
   
-  
+
   
 # FIXME: Possibly still need to filter cause the session is suddenly decreasing since someday 2023
   
