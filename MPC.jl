@@ -90,11 +90,10 @@ CSV.write("test_charging_sessions.csv", CP_data_clean_test)
 
 
 
-
+# Read data and plot statistics
 charging_sessions = CSV.read("train_charging_sessions.csv", DataFrame)
 charging_sessions = sort(charging_sessions, [:session_start_time_la])
 
-# Plot statistics
 hist_AT_all = histogram(Time.(charging_sessions.session_start_time_la), bins = 96, alpha=0.5, label="AT", xlabel="AT", ylabel="Sessions")
 hist_DT_all = histogram(Time.(charging_sessions.session_end_time_la), bins = 96, alpha=0.5, label="DT", xlabel="DT", ylabel="Sessions")
 
@@ -188,7 +187,6 @@ end
 
 
 ####################################################
-
 # MPC main function
 function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String, base::String)
     # Define rates based on season
@@ -257,7 +255,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                     data_forecast_update = copy(arrived_sessions_forecast)
                 end
             end
-            if (method == "Persistence+KNN" || method == "Statistic+KNN") 
+            if (method == "Persistence" || method == "Statistic") 
                 if isempty(arrived_sessions_today)
                     data_forecast_update = copy(data_forecast[1:2, :])
                     # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
@@ -275,9 +273,9 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                         closest_idx = argmin(abs.(arrived_sessions_forecast.AT .- arrived_sessions_today.AT[i]))
                         arrived_sessions_today.PD[i] = arrived_sessions_forecast.PD[closest_idx]
                         arrived_sessions_today.DT[i] = arrived_sessions_today.PD[i] + arrived_sessions_today.AT[i]
-                        if method == "Persistence+KNN"
+                        if method == "Persistence"
                             arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx]
-                        elseif method == "Statistic+KNN"
+                        elseif method == "Statistic"
                             arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx] * M # Difference
                         end
                     end
@@ -328,7 +326,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
         # SECTION: MPC optimization
         model = Model(Ipopt.Optimizer)
         # Set solver options
-        set_optimizer_attribute(model, "max_iter", 3000)  # Set maximum number of iterations
+        set_optimizer_attribute(model, "max_iter", 2000)  # Set maximum number of iterations
         set_optimizer_attribute(model, "tol", 1e-4)       # Set tolerance for convergence
         set_optimizer_attribute(model, "acceptable_tol", 1e-3)  # Set acceptable tolerance
         set_optimizer_attribute(model, "print_level", 0)  # Set printing level (0: no output, 5: full output)
@@ -336,7 +334,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
         # set_optimizer_attribute(model, "warm_start_init_point", "yes")
 
 
-        if base == "EV" # VERSION: base selection
+        if base == "EV"
             N_ev = size(data_forecast_update, 1) # Combine the forecasted and arrived EVs
 
             if N_ev > N_ev_last
@@ -411,7 +409,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             end
         
             @constraint(model, [t=k:N], L[t] == sum(P[t, i] for i in 1:N_ev))
-        elseif base == "Charger" # VERSION: base selection
+        elseif base == "Charger"
             combined_data_forecast_update = combine(groupby(data_forecast_update, [:station_name, :port]), 
             :AT => x -> collect(x) => :AT,
             :DT => x -> collect(x) => :DT,
@@ -422,14 +420,14 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
 
             # FIXME: some new charger ask Avik
             if !(all(row -> any(r -> r == row, eachrow(unique_stations_ports)), eachrow(chargers_update)))
-                CSV.write("chargers_update.csv", chargers_update)
+                CSV.write("chargers_update_wrong.csv", chargers_update)
                 error("Charger not in the unique_stations_ports")
             end
 
             missing_rows = filter(row -> !(row in eachrow(chargers_update)), eachrow(unique_stations_ports))
             missing_rows = DataFrame(missing_rows) 
-            missing_rows.AT = fill(8.0, nrow(missing_rows))
-            missing_rows.DT = fill(8.0, nrow(missing_rows))
+            missing_rows.AT = fill(23.75, nrow(missing_rows))
+            missing_rows.DT = fill(23.75, nrow(missing_rows))
             missing_rows.ED = fill(0.0, nrow(missing_rows))
             missing_rows = combine(groupby(missing_rows, [:station_name, :port]), 
             :AT => x -> collect(x) => :AT,
@@ -437,6 +435,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             :ED => x -> collect(x) => :ED)
 
             combined_data_forecast_update = vcat(combined_data_forecast_update, missing_rows)
+            combined_data_forecast_update = sort(combined_data_forecast_update, [:station_name, :port])
 
             if size(combined_data_forecast_update, 1) != size(unique_stations_ports, 1)
                 error("Charger size mismatch")
@@ -450,7 +449,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                 gamma_onpeak_k >= 0
             end
 
-            ED_vector = Vector{Float64}()
+            ED_vector = zeros(Float64, N_charger)
             
             # Constraints
             for i in 1:N_charger
@@ -459,7 +458,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                 DT_values = getfield.(combined_data_forecast_update.DT_function[i], 1)
                 ED_values = getfield.(combined_data_forecast_update.ED_function[i], 1)
                 busy_idx = []
-                ED = 0.0 # Total energy demand of a charger
+                ED = 0 # Total energy demand of a charger
 
                 if k == 1
                     @constraint(model, E[k, i] == 0) # Initial energy state
@@ -486,7 +485,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                     end
                 end
 
-                ED_vector = vcat(ED_vector, ED)
+                ED_vector[i] = ED
                 busy_idx = reduce(vcat, busy_idx)
                 vacant_idx = setdiff(1:N, busy_idx)
                 valid_vacant_idx = intersect(vacant_idx, k:N)
@@ -576,11 +575,13 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
 
         if base == "Charger"
             ED_plot = ED_vector
+            p0 = plot(ED_plot, label="ED", title="Energy Demand Check", xticks=1:20:length(ED_plot), size = (800, 600))
         elseif base == "EV"
             N_ev_last = N_ev
             ED_plot = ED
+            p0 = plot(ED_plot, label="ED", title="Energy Demand Check", xticks=1:5:length(ED_plot), size = (600, 600))
         end
-        p0 = plot(ED_plot, label="ED", title="Energy Demand Check", xticks=1:5:length(ED_plot))
+        
         plot!(p0, E_tmp, label="E_tmp")
         path = "ED_check/$today/$base/$method/"
         if !isdir(path)
@@ -679,7 +680,7 @@ end
 function forecast(data_input::DataFrame, method::String, updated_sessions::DataFrame)
     data_today = copy(data_input)
 
-    forecast_list = ["Perfect", "GMM", "Persistence+KNN", "Statistic+KNN", "Noforecast"]
+    forecast_list = ["Perfect", "GMM", "Persistence", "Statistic", "Noforecast"]
     if method ∉ forecast_list
         error("Invalid forecast method")
     elseif method == "Perfect" || method == "Noforecast"
@@ -688,7 +689,7 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
         data_input.DT = floor.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
         data_input.ED = data_input.total_energy_dispensed
         # data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
-    elseif method == "Persistence+KNN"
+    elseif method == "Persistence"
         # Just do the MPC with data from the previous smart day (weekday, weekend, holiday)
         target_time = data_input.session_start_time_la[1]
         target_day_type = datetype(target_time)
@@ -710,7 +711,7 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
     elseif method == "GMM"
         data_input.AT, data_input.DT, data_input.ED = predict_gmm(data_input) 
 
-    elseif method == "Statistic+KNN"
+    elseif method == "Statistic"
         target_time = data_input.session_start_time_la[1]
         target_day_type = datetype(target_time)
         same_type_sessions = updated_sessions[(updated_sessions.type .== target_day_type) .& (Date.(updated_sessions.session_start_time_la) .< Date(target_time)), :]
@@ -787,9 +788,7 @@ function daily_update(data_input::DataFrame, method::String, base::String)
         data_forecast, data_today = forecast(data_today, method, updated_sessions)
         
         L_mpc_tmp, P_mpc_tmp, E_mpc_tmp = run_mpc(data_forecast, data_today, method, base)
-
         updated_sessions = copy(tmp_sessions)
-
         L_mpc_dict[today_update] = L_mpc_tmp
         P_mpc_dict[today_update] = P_mpc_tmp
         E_mpc_dict[today_update] = E_mpc_tmp
@@ -826,23 +825,23 @@ days = unique(Date.(data_test.session_start_time_la))
 
 
 
-# Pick the closest M days in "Statistic+KNN"
+# Pick the closest M days in "Statistic"
 M = 3
 
 # Pick the method and base from below
-method_list = ["Perfect", "Noforecast", "Persistence+KNN", "Statistic+KNN"]
+method_list = ["Perfect", "Noforecast", "Persistence", "Statistic"]
 base_list = ["EV", "Charger"]
-# TODO: For testing
+# NOTE: For testing
 data_input = copy(data_test)
-method = "Perfect"
+method = "Statistic"
 base = "Charger"
 
 
-# FIXME: charger based not work well
+# TODO: charger based need other forecast methods to lower the cost!
 L_V0G, L_mpc_perfect, P_mpc_perfect, E_mpc_perfect = daily_update(data_test, "Perfect", base);
 L_V0G, L_mpc_noforecast, P_mpc_noforecast, E_mpc_noforecast = daily_update(data_test, "Noforecast", base);
-L_V0G, L_mpc_persistence_knn, P_mpc_persistence_knn, E_mpc_persistence_knn = daily_update(data_test, "Persistence+KNN", base);
-L_V0G, L_mpc_statistic_knn, P_mpc_statistic_knn, E_mpc_statistic_knn = daily_update(data_test, "Statistic+KNN", base);
+L_V0G, L_mpc_persistence_knn, P_mpc_persistence_knn, E_mpc_persistence_knn = daily_update(data_test, "Persistence", base);
+L_V0G, L_mpc_statistic_knn, P_mpc_statistic_knn, E_mpc_statistic_knn = daily_update(data_test, "Statistic", base);
 
 
 ####################################################
@@ -884,8 +883,8 @@ function load_plot()
 
     plot!(df_load_perfect.time, df_load_perfect.load, label="Perfect Forecast")
     plot!(df_load_noforecast.time, df_load_noforecast.load, label="No Forecast")
-    plot!(df_load_persistence_knn.time, df_load_persistence_knn.load, label="Persistence+KNN Forecast")
-    plot!(df_load_statistic_knn.time, df_load_statistic_knn.load, label="Statistic+KNN Forecast")
+    plot!(df_load_persistence_knn.time, df_load_persistence_knn.load, label="Persistence Forecast")
+    plot!(df_load_statistic_knn.time, df_load_statistic_knn.load, label="Statistic Forecast")
     p = plot(hist_AT, hist_DT, p_load_combined, layout=grid(3, 1, heights=[0.2 ,0.2, 0.6]), size=(3000, 1000))
     return p
 end
@@ -979,7 +978,7 @@ df_cost = DataFrame(day = days,
                     Statistic_KNN = collect(values(Cost_statistic_knn)))
 
 p_cost = groupedbar(df_cost.day, [df_cost.V0G df_cost.Perfect df_cost.Noforecast df_cost.Persistence_KNN df_cost.Statistic_KNN], 
-                    label=["V0G" "Perfect" "Noforecast" "Persistence+KNN" "Statistic+KNN"], xlabel="Day", ylabel="Cost", 
+                    label=["V0G" "Perfect" "Noforecast" "Persistence" "Statistic"], xlabel="Day", ylabel="Cost", 
                     bar_width=0.7, size=(800, 600), dpi=300, legend=:top, legendfontsize=5,
                     title="Cost Comparison")
 
