@@ -254,8 +254,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                 elseif !isempty(arrived_sessions_forecast)
                     data_forecast_update = copy(arrived_sessions_forecast)
                 end
-            end
-            if (method == "Persistence" || method == "Statistic") 
+            elseif method in ["Persistence", "Statistic"]
                 if isempty(arrived_sessions_today)
                     data_forecast_update = copy(data_forecast[1:2, :])
                     # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
@@ -677,13 +676,12 @@ end
 
 ####################################################
 # SECTION: Forecast function
-function forecast(data_input::DataFrame, method::String, updated_sessions::DataFrame)
+function forecast_ev(data_input::DataFrame, method::String, updated_sessions::DataFrame)
     data_today = copy(data_input)
-
-    forecast_list = ["Perfect", "GMM", "Persistence", "Statistic", "Noforecast"]
+    forecast_list = ["Perfect", "Persistence", "Statistic", "Noforecast"]
     if method ∉ forecast_list
         error("Invalid forecast method")
-    elseif method == "Perfect" || method == "Noforecast"
+    elseif method in ["Perfect", "Noforecast"]
         # The AT, DT, ED, PD should comply with or be more precise than the step length of MPC
         data_input.AT = ceil.(Float64.(Dates.hour.(data_input.session_start_time_la)) + Float64.(Dates.minute.(data_input.session_start_time_la)) / 60, digits=2)
         data_input.DT = floor.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
@@ -697,7 +695,6 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
         if nrow(same_type_sessions) == 0
             error("No valid sessions found for the same day type")
         end
-
         closest_idx = argmin(abs.(Date.(same_type_sessions.session_start_time_la) .- Date(target_time)))
         closest_date = Date(same_type_sessions.session_start_time_la[closest_idx])
         persistence_sessions = same_type_sessions[Date.(same_type_sessions.session_start_time_la) .== closest_date, :]
@@ -712,13 +709,14 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
         data_input.AT, data_input.DT, data_input.ED = predict_gmm(data_input) 
 
     elseif method == "Statistic"
+        # Pick the closest M days
+        M = 3
         target_time = data_input.session_start_time_la[1]
         target_day_type = datetype(target_time)
         same_type_sessions = updated_sessions[(updated_sessions.type .== target_day_type) .& (Date.(updated_sessions.session_start_time_la) .< Date(target_time)), :]
         if nrow(same_type_sessions) == 0
             error("No valid sessions found for the same day type")
         end
-
         session_dates = unique(Date.(same_type_sessions.session_start_time_la))
         differences = abs.(session_dates .- Date(target_time))
         closest_idxs = sortperm(differences)[1:min(M, length(differences))]
@@ -735,6 +733,25 @@ function forecast(data_input::DataFrame, method::String, updated_sessions::DataF
     return data_input, data_today
 end
 
+# NOTE: for compatibility with MPC, output will be also in session not charger form
+function forecast_charger(data_input::DataFrame, method::String, updated_sessions::DataFrame)
+    data_today = copy(data_input)
+    forecast_list = ["Perfect", "Persistence", "Statistic", "Noforecast"]
+    if method ∉ forecast_list
+        error("Invalid forecast method")
+    elseif method in ["Perfect", "Noforecast"]
+        data_input.AT = ceil.(Float64.(Dates.hour.(data_input.session_start_time_la)) + Float64.(Dates.minute.(data_input.session_start_time_la)) / 60, digits=2)
+        data_input.DT = floor.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
+        data_input.ED = data_input.total_energy_dispensed
+    elseif method in ["Persistence", "Statistic"]
+       111
+       # TODO: Implement the forecast for charger
+
+    end
+    return data_input, data_today
+end
+
+
 # V0G for comparison
 function run_V0G(data_input::DataFrame)
     L_V0G = zeros(N)
@@ -743,7 +760,6 @@ function run_V0G(data_input::DataFrame)
     data_input.DT = floor.(Float64.(Dates.hour.(data_input.session_end_time_la)) + Float64.(Dates.minute.(data_input.session_end_time_la)) / 60, digits=2)
     data_input.ED = data_input.total_energy_dispensed
 
-    
     for k in 1:N
         for i in 1:size(data_input, 1)
             Energy_dispensed = sum(P_V0G[1:k-1, i]) * delta_t
@@ -785,7 +801,11 @@ function daily_update(data_input::DataFrame, method::String, base::String)
         L_V0G_dict[today_update] = run_V0G(data_today)
         data_today.type = datetype.(data_today.session_start_time_la)
         tmp_sessions = vcat(updated_sessions, data_today)
-        data_forecast, data_today = forecast(data_today, method, updated_sessions)
+        if base == "EV"
+            data_forecast, data_today = forecast_ev(data_today, method, updated_sessions)
+        elseif base == "Charger"
+            data_forecast, data_today = forecast_charger(data_today, method, updated_sessions)
+        end
         
         L_mpc_tmp, P_mpc_tmp, E_mpc_tmp = run_mpc(data_forecast, data_today, method, base)
         updated_sessions = copy(tmp_sessions)
@@ -807,7 +827,6 @@ test_sessions = CSV.read("test_charging_sessions.csv", DataFrame)
 test_sessions = sort(test_sessions, [:session_start_time_la])
 start_date = Date(minimum(test_sessions.session_start_time_la))
 end_date = start_date + Day(3)
-
 data_test_candidate = filter(row -> start_date <= row.session_start_time_la <= end_date, test_sessions)
 data_test_candidate = sort(data_test_candidate, [:session_start_time_la])
 
@@ -818,20 +837,17 @@ data_test_candidate.AT_idx = ceil.(Int, data_test_candidate.AT / T * N) .+ 1
 data_test_candidate.DT_idx = floor.(Int, data_test_candidate.DT / T * N) .+ 1
 data_test_candidate.ED = data_test_candidate.total_energy_dispensed
 data_test_candidate.overMaxPower = data_test_candidate.ED .> P_max * delta_t * (data_test_candidate.DT_idx - data_test_candidate.AT_idx .+ 1)
-
 data_test = data_test_candidate[data_test_candidate.overMaxPower .== false, :]
 data_test = data_test[:, 1:6]
 days = unique(Date.(data_test.session_start_time_la))
 
 
 
-# Pick the closest M days in "Statistic"
-M = 3
 
-# Pick the method and base from below
+
+# NOTE: Pick the method and base from below for testing
 method_list = ["Perfect", "Noforecast", "Persistence", "Statistic"]
 base_list = ["EV", "Charger"]
-# NOTE: For testing
 data_input = copy(data_test)
 method = "Statistic"
 base = "Charger"
