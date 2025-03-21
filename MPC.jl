@@ -263,7 +263,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                     =#
 
                     noarrived_sessions_forecast = filter(row -> row.AT > update_time, data_forecast) 
-                    noarrived_sessions_forecast = filter(row -> row.ED >= 0.5, noarrived_sessions_forecast)
+                    noarrived_sessions_forecast = filter(row -> row.ED >= 0.5 * P_max * delta_t, noarrived_sessions_forecast)
                     noarrived_sessions_today = copy(noarrived_sessions_forecast)
                     if isempty(arrived_sessions_forecast)
                         # Increase ED of the forecasted EVs
@@ -728,6 +728,8 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
     elseif method in ["LSTM"]
         # For each charger train LSTM respectively
         N_days = 30
+        ED_min = 0.0
+        ED_max = P_max * delta_t
         target_time = data_today.session_start_time_la[1]
         today_update = Date(target_time)
         sessions_windowed = updated_sessions[(Date.(updated_sessions.session_start_time_la) .>= Date(target_time) - Day(N_days)), :]
@@ -762,8 +764,14 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
             # dev = Metal.device()
             ref_time = minimum(time_bins.interval)
             time_bins[!, :time_encoded] .= Dates.value.(time_bins.interval .- ref_time) ./ (60*15*10^3)  # Normalize by 15-min intervals
-            X = hcat(time_bins.time_encoded, time_bins.occupancy, time_bins.ED)'
-            y = hcat(time_bins.occupancy, time_bins.ED)'  # Target: occupancy & energy dispensed
+            # X = hcat(time_bins.time_encoded, time_bins.occupancy, time_bins.ED)'
+            period = T / delta_t
+            time_sin = sin.(2π * time_bins.time_encoded / period)
+            time_cos = cos.(2π * time_bins.time_encoded / period)
+            X = hcat(time_sin, time_cos)' # Only time is taken as input
+            y_occupancy = time_bins.occupancy
+            y_ED = (time_bins.ED .- ED_min) ./ (ED_max - ED_min)  # Normalize ED to [0,1]
+            y = hcat(y_occupancy, y_ED)'
             X = convert(Array{Float32}, X)
             y = convert(Array{Float32}, y)
             # Reshape for LSTM (features, sequence length, batch size)
@@ -775,17 +783,17 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
             # Flatten the list of sequences into a single batch
             X_train = cat(X_train..., dims=3)
             y_train = cat(y_train..., dims=3)
-            loader = Flux.DataLoader((X_train, y_train), batchsize=16, shuffle=true)
-            # TODO: Normalization? And change the relu into positive outputs
+            loader = Flux.DataLoader((X_train, y_train), batchsize=15, shuffle=true)
 
             model_lstm = Flux.Chain(
-                LSTM(3, 64), # 3 inputs: encoded time, occupancy, ED
-                Dense(64, 32, relu),
-                Dense(32, 2, relu) # 2 outputs: occupancy & ED
+                LSTM(2, 64), # 2 inputs: sin(time), cos(time)
+                Dense(64, 32, tanh),
+                Dense(32, 2, relu) # 2 outputs: occupancy & normalized ED
+                # x -> reshape(vcat(sigmoid.(x[1, :, :])', (ED_min .+ sigmoid.(x[2, :, :]) .* (ED_max - ED_min))'), size(x, 1), size(x, 2), size(x, 3))  # Batch-wise transformation
             )
             loss(x, y) = Flux.mse(model_lstm(x), y)
             opt = Flux.Adam()
-            epochs = 100
+            epochs = 30
             losses = []
             
             for epoch in 1:epochs
@@ -797,7 +805,7 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
 
             # Plot the loss curve
             p_loss = plot(losses, label="Loss", title="Loss Curve", size=(800, 600))
-            path = "LSTM_loss/$today/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/"
+            path = "LSTM/$today/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/"
             if !isdir(path)
                 mkpath(path)
             end
@@ -805,23 +813,29 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
 
             # Forecast today
             forecast = DataFrame(interval=collect(DateTime(today_update):Minute(15):DateTime(today_update) + Hour(23) + Minute(45)))
-            forecast[!, :occupancy] .= time_bins.occupancy[end-sequence_length+1:end]
-            forecast[!, :ED] .= time_bins.ED[end-sequence_length+1:end]
+            # forecast[!, :occupancy] .= time_bins.occupancy[end-sequence_length+1:end]
+            # forecast[!, :ED] .= time_bins.ED[end-sequence_length+1:end]
             forecast.time_encoded .= Dates.value.(forecast.interval .- ref_time) ./ (60*15*10^3)
-            forecast_X = hcat(forecast.time_encoded, forecast.occupancy, forecast.ED)'
+            forecast.time_sin = sin.(2π * forecast.time_encoded / period)
+            forecast.time_cos = cos.(2π * forecast.time_encoded / period)
+            forecast_X = hcat(forecast.time_sin, forecast.time_cos)'
             forecast_X = reshape(forecast_X, size(forecast_X, 1), size(forecast_X, 2), 1)
             forecast_X = convert(Array{Float32}, forecast_X)
             predictions = model_lstm(forecast_X) |> cpu
             forecast[!, :occupancy] .= vec(predictions[1, :, 1])
-            forecast[!, :ED] .= vec(predictions[2, :, 1])
+            forecast[!, :ED] .= vec(predictions[2, :, 1]).* (ED_max - ED_min) .+ ED_min
             forecast = select(forecast, [:interval, :occupancy, :ED])
             forecast[!, :station_name] .= charger.station_name
             forecast[!, :port] .= charger.port
 
-            #= Plot the forecasted occupancy and ED
-            p_occupancy = plot(forecast.interval, forecast.occupancy, label="Occupancy", title="Occupancy Forecast", size=(800, 600))
+            # Plot the forecasted occupancy and ED
+            p_occupancy_ED = plot(forecast.interval, forecast.occupancy, label="Occupancy", title="Occupancy Forecast", size=(800, 600))
             plot!(forecast.interval, forecast.ED, label="ED", title="LSTM Forecast", size=(800, 600))
-            =#
+            path = "LSTM/$today/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/"
+            if !isdir(path)
+                mkpath(path)
+            end
+            savefig(p_occupancy_ED, path * "forecast.png")
             combined_forecast = vcat(combined_forecast, forecast)
         end
         toc = time()
