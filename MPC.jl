@@ -16,8 +16,9 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays", "AutoMLPipeline", "StatsPlots", "IJulia", "Gurobi", "Flux", "MLJ", "TimeSeries", "Metal"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays", "AutoMLPipeline", "StatsPlots", "IJulia", "Gurobi", "Flux", "MLJ", "TimeSeries", "Metal", "Optimisers"]
 
+Pkg.Registry.update()
 for package in packages
     Pkg.add(package)
 end
@@ -30,6 +31,20 @@ for package in packages
     end
 end
 print("All packages are successfully loaded")
+
+
+# Add the TransformersLite package by https://github.com/LiorSinai/TransformersLite.jl?tab=readme-ov-file
+# Pkg.rm("TransformersLite")
+Pkg.develop(path="/Users/admin/Desktop/EV_program/2024Summer_EVResearch/TransformersLite")
+# Pkg.activate("/Users/admin/Desktop/EV_program/2024Summer_EVResearch/TransformersLite")
+Pkg.status()
+Pkg.instantiate()
+
+using TransformersLite
+
+# Test if TransformersLite works
+TransformerBlock(4, 32, 128; pdrop=0.1)
+
 
 # Clear console
 print("\033c") # Or REPL: Ctrl + L
@@ -456,7 +471,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             chargers_update = sort(chargers_update, :station_name)
 
             if !(all(row -> any(r -> r == row, eachrow(unique_stations_ports)), eachrow(chargers_update)))
-                CSV.write("chargers_update_wrong.csv", chargers_update)
+                # CSV.write("chargers_update_wrong.csv", chargers_update)
                 error("Charger not in the unique_stations_ports")
             end
 
@@ -505,6 +520,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                     end
                 end
 
+                # FIXME: charger forecast not know the number of j, more loose version at the end of day meet ED
                 for j in eachindex(AT_values)
                     at_idx = ceil(Int, AT_values[j] / T * N) + 1
                     dt_idx = floor(Int, DT_values[j] / T * N) + 1
@@ -756,16 +772,17 @@ end
 # NOTE: for compatibility with MPC, output will be also in session not charger form
 function forecast_charger(data_today::DataFrame, method::String, updated_sessions::DataFrame)
     data_forecast = copy(data_today)
-    forecast_list = ["Perfect", "Noforecast", "LSTM", "Transformer"]
+    forecast_list = ["Perfect", "Noforecast", "Persistence", "LSTM", "Transformer"]
     if method ∉ forecast_list
         error("Invalid forecast method")
     elseif method in ["Perfect", "Noforecast"]
         data_forecast.AT = ceil.(Float64.(Dates.hour.(data_forecast.session_start_time_la)) + Float64.(Dates.minute.(data_forecast.session_start_time_la)) / 60, digits=2)
         data_forecast.DT = floor.(Float64.(Dates.hour.(data_forecast.session_end_time_la)) + Float64.(Dates.minute.(data_forecast.session_end_time_la)) / 60, digits=2)
         data_forecast.ED = data_forecast.total_energy_dispensed
-    elseif method in ["LSTM"]
-        # For each charger train LSTM respectively
+    elseif method in ["LSTM", "Transformer"]
+        # For each charger train NN model respectively
         Random.seed!(17)
+        device = gpu_device()
         N_days = 30
         ED_min = 0.0
         ED_max = P_max * delta_t
@@ -775,9 +792,56 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
         sessions_windowed[!, :start_interval] = ceil.(sessions_windowed.session_start_time_la, Minute(15))
         sessions_windowed[!, :end_interval] = floor.(sessions_windowed.session_end_time_la, Minute(15))
         time_bins = DataFrame(interval=collect(DateTime(Date(minimum(sessions_windowed.start_interval))):Minute(15):DateTime(Date(maximum(sessions_windowed.end_interval)))+Hour(23)+Minute(45)))
+        ref_time = minimum(time_bins.interval)
+        time_bins[!, :time_encoded] .= Dates.value.(time_bins.interval .- ref_time) ./ (60*15*10^3)  # Normalize by 15-min intervals
+        period = T / delta_t
+        time_bins.time_sin .= sin.(2π * time_bins.time_encoded / period)
+        time_bins.time_cos .= cos.(2π * time_bins.time_encoded / period)
+        X = hcat(time_bins.time_sin, time_bins.time_cos)' # Only time is taken as input
+        X = convert(Array{Float32}, X)
+        sequence_length = N  # 1 day of data
+        num_sequences = size(X, 2) ÷ sequence_length
+        X_train = [X[:, (i-1)*sequence_length+1:i*sequence_length, :] for i in 1:num_sequences]
+        X_train = cat(X_train..., dims=3)
 
+        # Create the model
+        Flux.reset!(model_ml)
+        if method == "LSTM"
+            model_ml = Flux.Chain(
+                    LSTM(2 => 64),               # or Recur(LSTMCell(2, 64))
+                    Dense(64 => 32, tanh),
+                    Dense(32 => 2, relu)
+                )
+        elseif method == "Transformer"
+            position_encoding = PositionEncoding(32)
+            add_position_encoding(x) = x .+ position_encoding(x)
+            model_ml = Flux.Chain(
+                Embedding(1000 => 32), # vocab length is 1000
+                add_position_encoding, # can also make anonymous
+                Dropout(0.1),
+                TransformerBlock(4, 32, 32 * 4; pdrop=0.1),
+                TransformerBlock(4, 32, 32 * 4; pdrop=0.1),
+                Dense(32, 1),
+                FlattenLayer(),
+                Dense(10, 3) # sentence length is 10, 3 labels
+                )
+        end
+
+        loss(x, y) = Flux.mse(model_ml(x), y)
         combined_forecast = DataFrame(interval=DateTime[], occupancy=Float64[], ED=Float64[], station_name=String[], port=Int64[])
         tic = time()
+        epochs = 50
+
+        # Forecast today
+        forecast = DataFrame(interval=collect(DateTime(today_update):Minute(15):DateTime(today_update) + Hour(23) + Minute(45)))
+        forecast.time_encoded .= Dates.value.(forecast.interval .- ref_time) ./ (60*15*10^3)
+        forecast.time_sin = sin.(2π * forecast.time_encoded / period)
+        forecast.time_cos = cos.(2π * forecast.time_encoded / period)
+        forecast_X = hcat(forecast.time_sin, forecast.time_cos)'
+        forecast_X = reshape(forecast_X, size(forecast_X, 1), size(forecast_X, 2), 1)
+        forecast_X = convert(Array{Float32}, forecast_X)
+
+
         @showprogress for charger in eachrow(unique_stations_ports)
             charger_idx = findfirst(==(charger), eachrow(unique_stations_ports))
             time_bins.occupancy .= 0
@@ -796,91 +860,66 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
                     end
                 end
             else
-                print("\nNo history sessions found for $(charger.station_name) port $(charger.port)")
+                # print("\nNo history sessions found for $(charger.station_name) port $(charger.port)") # keep their occupancy and ED as 0
                 continue;
             end
-            # LSTM model could be accelerated by Metal.jl but not solved yet
+            # NN model could be accelerated by Metal.jl but not solved yet
             # dev = Metal.device()
-            ref_time = minimum(time_bins.interval)
-            time_bins[!, :time_encoded] .= Dates.value.(time_bins.interval .- ref_time) ./ (60*15*10^3)  # Normalize by 15-min intervals
-            # X = hcat(time_bins.time_encoded, time_bins.occupancy, time_bins.ED)'
-            period = T / delta_t
-            time_sin = sin.(2π * time_bins.time_encoded / period)
-            time_cos = cos.(2π * time_bins.time_encoded / period)
-            X = hcat(time_sin, time_cos)' # Only time is taken as input
+            
             y_occupancy = time_bins.occupancy
             y_ED = (time_bins.ED .- ED_min) ./ (ED_max - ED_min)  # Normalize ED to [0,1]
             y = hcat(y_occupancy, y_ED)'
-            X = convert(Array{Float32}, X)
             y = convert(Array{Float32}, y)
-            # Reshape for LSTM (features, sequence length, batch size)
-            sequence_length = N  # 1 day of data
-            num_sequences = size(X, 2) ÷ sequence_length
-            # Split into smaller sequences
-            X_train = [X[:, (i-1)*sequence_length+1:i*sequence_length, :] for i in 1:num_sequences]
+            # Reshape (features, sequence length, batch size)
             y_train = [y[:, (i-1)*sequence_length+1:i*sequence_length, :] for i in 1:num_sequences]
             # Flatten the list of sequences into a single batch
-            X_train = cat(X_train..., dims=3)
             y_train = cat(y_train..., dims=3)
             loader = Flux.DataLoader((X_train, y_train), batchsize=15, shuffle=true)
-
-            model_lstm = Flux.Chain(
-                LSTM(2, 64), # 2 inputs: sin(time), cos(time)
-                Dense(64, 32, tanh),
-                Dense(32, 2, relu) # 2 outputs: occupancy & normalized ED
-                # x -> reshape(vcat(sigmoid.(x[1, :, :])', (ED_min .+ sigmoid.(x[2, :, :]) .* (ED_max - ED_min))'), size(x, 1), size(x, 2), size(x, 3))  # Batch-wise transformation
-            )
-            loss(x, y) = Flux.mse(model_lstm(x), y)
-            opt = Flux.Adam()
-            epochs = 30
-            losses = []
             
+            
+            losses = []
+            Flux.reset!(model_ml)
+            opt = Flux.Adam()
+            state = Flux.setup(opt, model_ml)
+            state = Flux.setup(OptimiserChain(WeightDecay(0.42), Adam(0.1)), model) # with l2 regularization
+
             for epoch in 1:epochs
-                for (x, y) in loader  # Flux handles batch updates correctly
-                    Flux.train!(loss, Flux.params(model_lstm), [(x, y)], opt)
+                Flux.train!(model_ml, loader, state) do m, x, y
+                    Flux.mse(m(x), y)
                 end
                 push!(losses, loss(X_train, y_train))
             end
 
+
+
+
             # Plot the loss curve
             p_loss = plot(losses, label="Loss", title="Loss Curve", size=(800, 600))
-            path = "LSTM/$today/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/"
+            path = "ML/$today_update/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/LSTM/"
             if !isdir(path)
                 mkpath(path)
             end
             savefig(p_loss, path * "loss.png")
 
-            # Forecast today
-            forecast = DataFrame(interval=collect(DateTime(today_update):Minute(15):DateTime(today_update) + Hour(23) + Minute(45)))
-            # forecast[!, :occupancy] .= time_bins.occupancy[end-sequence_length+1:end]
-            # forecast[!, :ED] .= time_bins.ED[end-sequence_length+1:end]
-            forecast.time_encoded .= Dates.value.(forecast.interval .- ref_time) ./ (60*15*10^3)
-            forecast.time_sin = sin.(2π * forecast.time_encoded / period)
-            forecast.time_cos = cos.(2π * forecast.time_encoded / period)
-            forecast_X = hcat(forecast.time_sin, forecast.time_cos)'
-            forecast_X = reshape(forecast_X, size(forecast_X, 1), size(forecast_X, 2), 1)
-            forecast_X = convert(Array{Float32}, forecast_X)
-            predictions = model_lstm(forecast_X) |> cpu
+            # Forecast today's occupancy and ED of this charger
+            predictions = model_ml(forecast_X) |> cpu
+            # TODO: maybe ensure the occupancy is in binary with threshold?
             forecast[!, :occupancy] .= vec(predictions[1, :, 1])
-            forecast[!, :ED] .= vec(predictions[2, :, 1]).* (ED_max - ED_min) .+ ED_min
-            forecast = select(forecast, [:interval, :occupancy, :ED])
+            forecast[!, :normalized_ED] .= vec(predictions[2, :, 1]).* (ED_max - ED_min) .+ ED_min
             forecast[!, :station_name] .= charger.station_name
             forecast[!, :port] .= charger.port
 
             # Plot the forecasted occupancy and ED
             p_occupancy_ED = plot(forecast.interval, forecast.occupancy, label="Occupancy", title="Occupancy Forecast", size=(800, 600))
-            plot!(forecast.interval, forecast.ED, label="ED", title="LSTM Forecast", size=(800, 600))
-            path = "LSTM/$today/$(unique_stations_ports.station_name[charger_idx])/port $(unique_stations_ports.port[charger_idx])/"
-            if !isdir(path)
-                mkpath(path)
-            end
+            plot!(forecast.interval, forecast.normalized_ED, label="ED", title="LSTM Forecast", size=(800, 600))
             savefig(p_occupancy_ED, path * "forecast.png")
             combined_forecast = vcat(combined_forecast, forecast)
         end
         toc = time()
-        print("LSTM forecast for $today_update is done in $(ceil(toc - tic)) seconds\n")
+        print("ML forecast for $today_update with $method is done in $(ceil(toc - tic)) seconds\n")
+ 
         # Convert to EV session form
-        combined_forecast[!, :ED] .= combined_forecast.occupancy .* combined_forecast.ED
+        combined_forecast[!, :ED] .= combined_forecast.occupancy .* combined_forecast.normalized_ED
         combined_forecast = filter(row -> row.ED >= 0 && row.occupancy >= 0, combined_forecast)
         # Add required columns for MPC input
         combined_forecast[!, :driver_id] .= "dummy"  # Placeholder, replace with actual driver IDs if available
@@ -893,8 +932,6 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
         combined_forecast = select(combined_forecast, [:driver_id, :session_start_time_la, :session_end_time_la, :total_energy_dispensed, :AT, :DT, :ED, :station_name, :port, :type])
 
         data_forecast = copy(combined_forecast)
-    elseif method in ["Transformer"]
-        # TODO: Transformer model
     end
     return data_forecast
 end
@@ -993,10 +1030,10 @@ days = unique(Date.(data_test.session_start_time_la))
 
 # VERSION: Pick the method and base from below for testing
 method_list_EV = ["Perfect", "Noforecast", "Persistence", "Statistic"]
-method_list_Charger = ["Perfect", "Noforecast", "LSTM"]
+method_list_Charger = ["Perfect", "Noforecast", "LSTM", "Transformer"]
 base_list = ["EV", "Charger"]
 data_input = copy(data_test)
-method = "LSTM"
+method = "Perfect"
 base = "Charger"
 
 # EV testing
@@ -1009,6 +1046,7 @@ L_V0G, L_mpc_statistic, P_mpc_statistic, E_mpc_statistic = daily_update(data_tes
 L_V0G, L_mpc_perfect, P_mpc_perfect, E_mpc_perfect = daily_update(data_test, "Perfect", "Charger");
 L_V0G, L_mpc_noforecast, P_mpc_noforecast, E_mpc_noforecast = daily_update(data_test, "Noforecast", "Charger");
 L_V0G, L_mpc_lstm, P_mpc_lstm, E_mpc_lstm = daily_update(data_test, "LSTM", "Charger");
+L_V0G, L_mpc_transformer, P_mpc_transformer, E_mpc_transformer = daily_update(data_test, "Transformer", "Charger");
 
 
 
