@@ -217,178 +217,177 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
         N_ev_last = size(data_forecast, 1)
     elseif base == "Charger"
         N_charger = size(unique_stations_ports, 1)
+        if N_charger != size(data_forecast, 1)
+            error("Error number of forecasted chargers")
+        end
     end
 
     # Setup Gurobi environment in case of printing license information every time
     GUROBI_ENV = Gurobi.Env()
+    model_mpc = JuMP.Model(() -> Gurobi.Optimizer(GUROBI_ENV)) 
+    # Set solver options
+    set_optimizer_attribute(model_mpc, "OutputFlag", 0)  # Suppress solver output
+    set_optimizer_attribute(model_mpc, "Threads", 6)   # Use multiple threads
+    #=
+    set_optimizer_attribute(model, "max_iter", 2000)  # Set maximum number of iterations
+    set_optimizer_attribute(model, "tol", 1e-4)       # Set tolerance for convergence
+    set_optimizer_attribute(model, "acceptable_tol", 1e-3)  # Set acceptable tolerance
+    set_optimizer_attribute(model, "print_level", 0)  # Set printing level (0: no output, 5: full output)
+    set_optimizer_attribute(model, "constr_viol_tol", 1e-3)  # Set constraint violation tolerance
+    set_optimizer_attribute(model, "warm_start_init_point", "yes")
+    =#
 
     @showprogress for k in 1:N
         # SECTION: Preprocessing
         data_forecast_update = DataFrame()
 
-        # No real-time update
-        if method == "Perfect"
-            data_forecast_update = copy(data_forecast)
-        # Real-time update at every time step: only arrived EVs can be charged and considered in the MPC
-        else
-            update_time = (k - 1) * delta_t
-            last_step_time = (k - 2) * delta_t
+        if base == "EV"
+            # No real-time update
+            if method == "Perfect"
+                data_forecast_update = copy(data_forecast)
+            # Real-time update at every time step: only arrived EVs can be charged and considered in the MPC
+            else
+                update_time = (k - 1) * delta_t
+                last_step_time = (k - 2) * delta_t
 
-            arrived_sessions_today = filter(row -> row.AT <= update_time, data_today)
-            arrived_sessions_forecast = filter(row -> row.AT <= update_time, data_forecast)
-            arrived_sessions_today.ED = zeros(size(arrived_sessions_today, 1))
-            arrived_sessions_today.DT = zeros(size(arrived_sessions_today, 1))
-            # arrived_sessions_step = filter(row -> last_step_time < row.AT <= update_time, data_today)
+                arrived_sessions_today = filter(row -> row.AT <= update_time, data_today)
+                arrived_sessions_forecast = filter(row -> row.AT <= update_time, data_forecast)
+                arrived_sessions_today.ED = zeros(size(arrived_sessions_today, 1))
+                arrived_sessions_today.DT = zeros(size(arrived_sessions_today, 1))
+                # arrived_sessions_step = filter(row -> last_step_time < row.AT <= update_time, data_today)
 
-            if method == "Noforecast"
-                if !all(arrived_sessions_forecast.AT .== arrived_sessions_today.AT)
-                    error("Noforecast method should have the same AT as perfect forecast")
-                elseif isempty(arrived_sessions_forecast)
-                    data_forecast_update = copy(data_forecast[1:2, :])
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
-                elseif !isempty(arrived_sessions_forecast)
-                    data_forecast_update = copy(arrived_sessions_forecast)
-                end
-            elseif method in ["Persistence", "Statistic", "LSTM"]
-                if isempty(arrived_sessions_today)
-                    data_forecast_update = copy(data_forecast[1:2, :])
-                    # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
-                    # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
-                    # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
-                    data_forecast_update.ED .= 0
-                elseif !isempty(arrived_sessions_today)
-                    # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
-                    arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
-                    arrived_sessions_today.ED = arrived_sessions_today.total_energy_dispensed
-
-                    #= VERSION: Assume only real AT is known after arrival of EVs
-                    for i in 1:size(arrived_sessions_today, 1)
-                        closest_idx = argmin(abs.(arrived_sessions_forecast.AT .- arrived_sessions_today.AT[i]))
-                        arrived_sessions_today.PD[i] = arrived_sessions_forecast.PD[closest_idx]
-                        arrived_sessions_today.DT[i] = arrived_sessions_today.PD[i] + arrived_sessions_today.AT[i]
-                        if method == "Persistence"
-                            arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx]
-                        elseif method == "Statistic"
-                            arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx] * M # Difference
-                        end
+                if method == "Noforecast"
+                    if !all(arrived_sessions_forecast.AT .== arrived_sessions_today.AT)
+                        error("Noforecast method should have the same AT as perfect forecast")
+                    elseif isempty(arrived_sessions_forecast)
+                        data_forecast_update = copy(data_forecast[1:2, :])
+                        # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
+                        # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
+                        data_forecast_update.ED .= 0
+                    elseif !isempty(arrived_sessions_forecast)
+                        data_forecast_update = copy(arrived_sessions_forecast)
                     end
-                    =#
+                elseif method in ["Persistence", "Statistic", "LSTM"]
+                    if isempty(arrived_sessions_today)
+                        data_forecast_update = copy(data_forecast[1:2, :])
+                        # postpone time so that unarrived EVs are not charged -- lead to index out of bounds and AT > DT
+                        # data_forecast_update.AT .= min.(data_forecast_update.AT .+ 1, 23.99)
+                        # data_forecast_update.DT .= min.(data_forecast_update.DT .+ 1, 23.99)
+                        data_forecast_update.ED .= 0
+                    elseif !isempty(arrived_sessions_today)
+                        # VERSION: Assume all real AT, DT, ED, PD are known after arrival of EVs to make sure the area of load plot is the same as the real data
+                        arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
+                        arrived_sessions_today.ED = arrived_sessions_today.total_energy_dispensed
 
-                    noarrived_sessions_forecast = filter(row -> row.AT > update_time && row.ED > 0, data_forecast) 
-                    # noarrived_sessions_forecast = filter(row -> row.ED >= 0.5 * P_max * delta_t, noarrived_sessions_forecast) # Otherwise too many variables
-                    noarrived_sessions_today = copy(noarrived_sessions_forecast)
-                    if method in ["Persistence", "Statistic"]
-                        if isempty(arrived_sessions_forecast)
-                            # Increase ED of the forecasted EVs
-                            ED_candidate = noarrived_sessions_forecast.ED * (1 + k / N)^(1/2)
-                            ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.DT / T * N) .- ceil.(Int, noarrived_sessions_forecast.AT / T * N) .+ 1) * delta_t, 0)
-                            noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
-                        elseif !isempty(arrived_sessions_forecast)
-                            # NOTE: for persistence forecast ED could be super large that full power charging cannot meet the ED, so take the sqrt
-                            EV_ratio = size(arrived_sessions_today, 1) / size(arrived_sessions_forecast, 1)
-                            # VERSION: change the ED accordingly
-                            ED_candidate = noarrived_sessions_forecast.ED * EV_ratio^(1/2)
-                            ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.DT / T * N) .- ceil.(Int, noarrived_sessions_forecast.AT / T * N) .+ 1) * delta_t, 0)
-                            noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
-                            #= VERSION: partially use the historical session
-                            if EV_ratio <= 1
-                                # Randomly pick nonredundant rows from `noarrived_sessions_forecast`
-                                num_to_pick = round(Int, EV_ratio * size(noarrived_sessions_forecast, 1))
-                                noarrived_sessions_today = noarrived_sessions_forecast[rand(1:end, num_to_pick), :]
-                            elseif EV_ratio > 1
-                                # Randomly pick nonredundant rows and combine with `noarrived_sessions_forecast`
-                                n_duplicate = floor(Int, EV_ratio) 
-                                num_to_pick = round(Int, (EV_ratio - n_duplicate) * size(noarrived_sessions_forecast, 1))
-                                additional_sessions = noarrived_sessions_forecast[rand(1:end, num_to_pick), :]
-                                ED_candidate = noarrived_sessions_forecast.ED * sqrt(EV_ratio)
-                                ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.PD / T * N) .-1) * delta_t, 0)
-                                noarrived_sessions_forecast.ED = min.(ED_candidate, ED_max)
-                                noarrived_sessions_today = vcat(noarrived_sessions_forecast, additional_sessions)
+                        #= VERSION: Assume only real AT is known after arrival of EVs
+                        for i in 1:size(arrived_sessions_today, 1)
+                            closest_idx = argmin(abs.(arrived_sessions_forecast.AT .- arrived_sessions_today.AT[i]))
+                            arrived_sessions_today.PD[i] = arrived_sessions_forecast.PD[closest_idx]
+                            arrived_sessions_today.DT[i] = arrived_sessions_today.PD[i] + arrived_sessions_today.AT[i]
+                            if method == "Persistence"
+                                arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx]
+                            elseif method == "Statistic"
+                                arrived_sessions_today.ED[i] = arrived_sessions_forecast.ED[closest_idx] * M # Difference
                             end
-                            =#
                         end
-                    elseif method == "LSTM"
-                        forecast_station_port = unique(noarrived_sessions_forecast[:, [:station_name, :port]])
-                        today_station_port = unique(arrived_sessions_today[:, [:station_name, :port]])
-                        combined_sessions = DataFrame()
-                        strange_site = DataFrame()
-                        ED_threshold = 6
-                        for site in eachrow(forecast_station_port)
-                            if site in eachrow(today_station_port)
-                                real_DT_max = maximum(arrived_sessions_today.DT[findall(row -> row.station_name == site.station_name && row.port == site.port, eachrow(arrived_sessions_today))])
-                                noarrived_sessions_today = filter(row -> !(row.station_name == site.station_name && row.port == site.port && row.AT <= real_DT_max), noarrived_sessions_today)
-                            end
-                            # Combine the continuous forecast sessions of each station and port
-                            site_sessions = filter(row -> row.station_name == site.station_name && row.port == site.port, noarrived_sessions_today)
-                            if isempty(site_sessions)
-                                continue
-                            elseif size(site_sessions, 1) > 1
-                                site_sessions[!, :AT_diff] .= vcat(0, diff(site_sessions.AT))
-                                if all(site_sessions.AT_diff[2:end] .== 0.25)
-                                    combined_site_sessions = site_sessions[1, :]
-                                    combined_site_sessions.DT = site_sessions.DT[end]
-                                    combined_site_sessions.ED = sum(site_sessions.ED)
-                                    push!(combined_sessions, combined_site_sessions)
-                                else
-                                    print("Strange site sessions: ", site_sessions, "k:", k, "\n")
-                                    strange_site = vcat(strange_site, site_sessions)
-                                    site_sessions = filter(row -> row.ED >= 0.1, site_sessions)
-                                    combined_sessions = vcat(combined_sessions, site_sessions)
+                        =#
+
+                        noarrived_sessions_forecast = filter(row -> row.AT > update_time && row.ED > 0, data_forecast) 
+                        # noarrived_sessions_forecast = filter(row -> row.ED >= 0.5 * P_max * delta_t, noarrived_sessions_forecast) # Otherwise too many variables
+                        noarrived_sessions_today = copy(noarrived_sessions_forecast)
+                        if method in ["Persistence", "Statistic"]
+                            if isempty(arrived_sessions_forecast)
+                                # Increase ED of the forecasted EVs
+                                ED_candidate = noarrived_sessions_forecast.ED * (1 + k / N)^(1/2)
+                                ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.DT / T * N) .- ceil.(Int, noarrived_sessions_forecast.AT / T * N) .+ 1) * delta_t, 0)
+                                noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
+                            elseif !isempty(arrived_sessions_forecast)
+                                # NOTE: for persistence forecast ED could be super large that full power charging cannot meet the ED, so take the sqrt
+                                EV_ratio = size(arrived_sessions_today, 1) / size(arrived_sessions_forecast, 1)
+                                # VERSION: change the ED accordingly
+                                ED_candidate = noarrived_sessions_forecast.ED * EV_ratio^(1/2)
+                                ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.DT / T * N) .- ceil.(Int, noarrived_sessions_forecast.AT / T * N) .+ 1) * delta_t, 0)
+                                noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
+                                #= VERSION: partially use the historical session
+                                if EV_ratio <= 1
+                                    # Randomly pick nonredundant rows from `noarrived_sessions_forecast`
+                                    num_to_pick = round(Int, EV_ratio * size(noarrived_sessions_forecast, 1))
+                                    noarrived_sessions_today = noarrived_sessions_forecast[rand(1:end, num_to_pick), :]
+                                elseif EV_ratio > 1
+                                    # Randomly pick nonredundant rows and combine with `noarrived_sessions_forecast`
+                                    n_duplicate = floor(Int, EV_ratio) 
+                                    num_to_pick = round(Int, (EV_ratio - n_duplicate) * size(noarrived_sessions_forecast, 1))
+                                    additional_sessions = noarrived_sessions_forecast[rand(1:end, num_to_pick), :]
+                                    ED_candidate = noarrived_sessions_forecast.ED * sqrt(EV_ratio)
+                                    ED_max = max.(P_max * (floor.(Int, noarrived_sessions_forecast.PD / T * N) .-1) * delta_t, 0)
+                                    noarrived_sessions_forecast.ED = min.(ED_candidate, ED_max)
+                                    noarrived_sessions_today = vcat(noarrived_sessions_forecast, additional_sessions)
                                 end
-                            elseif size(site_sessions, 1) == 1
-                                site_sessions[!, :AT_diff] .= 0.0
-                                push!(combined_sessions, site_sessions[1, :])
+                                =#
                             end
-                        end
-                        if !isempty(combined_sessions)
-                            combined_sessions = select(combined_sessions, Not(:AT_diff))
-                            noarrived_sessions_today = copy(combined_sessions)
-                            #= Update the ED
-                            EV_ratio = sum(arrived_sessions_today.ED) / sum(arrived_sessions_forecast.ED)
-                            if EV_ratio >= ED_threshold
-                                ED_candidate = noarrived_sessions_today.ED
+                        elseif method in ["LSTM", "Transformer"]
+                            forecast_station_port = unique(noarrived_sessions_forecast[:, [:station_name, :port]])
+                            today_station_port = unique(arrived_sessions_today[:, [:station_name, :port]])
+                            combined_sessions = DataFrame()
+                            strange_site = DataFrame()
+                            ED_threshold = 6
+                            for site in eachrow(forecast_station_port)
+                                if site in eachrow(today_station_port)
+                                    real_DT_max = maximum(arrived_sessions_today.DT[findall(row -> row.station_name == site.station_name && row.port == site.port, eachrow(arrived_sessions_today))])
+                                    noarrived_sessions_today = filter(row -> !(row.station_name == site.station_name && row.port == site.port && row.AT <= real_DT_max), noarrived_sessions_today)
+                                end
+                                # Combine the continuous forecast sessions of each station and port
+                                site_sessions = filter(row -> row.station_name == site.station_name && row.port == site.port, noarrived_sessions_today)
+                                if isempty(site_sessions)
+                                    continue
+                                elseif size(site_sessions, 1) > 1
+                                    site_sessions[!, :AT_diff] .= vcat(0, diff(site_sessions.AT))
+                                    if all(site_sessions.AT_diff[2:end] .== 0.25)
+                                        combined_site_sessions = site_sessions[1, :]
+                                        combined_site_sessions.DT = site_sessions.DT[end]
+                                        combined_site_sessions.ED = sum(site_sessions.ED)
+                                        push!(combined_sessions, combined_site_sessions)
+                                    else
+                                        print("Strange site sessions: ", site_sessions, "k:", k, "\n")
+                                        strange_site = vcat(strange_site, site_sessions)
+                                        site_sessions = filter(row -> row.ED >= 0.1, site_sessions)
+                                        combined_sessions = vcat(combined_sessions, site_sessions)
+                                    end
+                                elseif size(site_sessions, 1) == 1
+                                    site_sessions[!, :AT_diff] .= 0.0
+                                    push!(combined_sessions, site_sessions[1, :])
+                                end
+                            end
+                            if !isempty(combined_sessions)
+                                combined_sessions = select(combined_sessions, Not(:AT_diff))
+                                noarrived_sessions_today = copy(combined_sessions)
+                                #= Update the ED
+                                EV_ratio = sum(arrived_sessions_today.ED) / sum(arrived_sessions_forecast.ED)
+                                if EV_ratio >= ED_threshold
+                                    ED_candidate = noarrived_sessions_today.ED
+                                else
+                                    ED_candidate = noarrived_sessions_today.ED * EV_ratio^(1/4)
+                                end
+                                ED_max = max.(P_max * (floor.(Int, noarrived_sessions_today.DT / T * N) .- ceil.(Int, noarrived_sessions_today.AT / T * N) .+ 1) * delta_t, 0)
+                                noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
+                                =#
                             else
-                                ED_candidate = noarrived_sessions_today.ED * EV_ratio^(1/4)
+                                noarrived_sessions_today = copy(combined_sessions)
                             end
-                            ED_max = max.(P_max * (floor.(Int, noarrived_sessions_today.DT / T * N) .- ceil.(Int, noarrived_sessions_today.AT / T * N) .+ 1) * delta_t, 0)
-                            noarrived_sessions_today.ED = min.(ED_candidate, ED_max)
-                            =#
-                        else
-                            noarrived_sessions_today = copy(combined_sessions)
                         end
+                        data_forecast_update = vcat(arrived_sessions_today, noarrived_sessions_today)
                     end
-                    data_forecast_update = vcat(arrived_sessions_today, noarrived_sessions_today)
                 end
             end
-        end
 
-        if size(data_forecast_update, 1) == 0
-            error("Wrong preprocessing before MPC")
-        end
+            if size(data_forecast_update, 1) == 0
+                error("Wrong preprocessing before MPC")
+            end
 
-        # SECTION: MPC optimization
-        # model = Model(Gurobi.Optimizer)
-        model_mpc = JuMP.Model(() -> Gurobi.Optimizer(GUROBI_ENV)) 
-        # Set Gurobi solver options
-        set_optimizer_attribute(model_mpc, "OutputFlag", 0)  # Suppress solver output
-        set_optimizer_attribute(model_mpc, "Threads", 6)   # Use multiple threads
+            # SECTION: MPC optimization
 
-        #= model = Model(Ipopt.Optimizer)
-        # Set Ipopt solver options
-        set_optimizer_attribute(model, "max_iter", 2000)  # Set maximum number of iterations
-        set_optimizer_attribute(model, "tol", 1e-4)       # Set tolerance for convergence
-        set_optimizer_attribute(model, "acceptable_tol", 1e-3)  # Set acceptable tolerance
-        set_optimizer_attribute(model, "print_level", 0)  # Set printing level (0: no output, 5: full output)
-        =#
-        # set_optimizer_attribute(model, "constr_viol_tol", 1e-3)  # Set constraint violation tolerance
-        # set_optimizer_attribute(model, "warm_start_init_point", "yes")
-
-
-        if base == "EV"
             N_ev = size(data_forecast_update, 1) # Combine the forecasted and arrived EVs
-
+            
             if N_ev > N_ev_last
                 flag = "more"
             elseif N_ev < N_ev_last
@@ -461,36 +460,15 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             end
         
             @constraint(model_mpc, [t=k:N], L[t] == sum(P[t, i] for i in 1:N_ev))
+
         elseif base == "Charger"
-            combined_data_forecast_update = combine(groupby(data_forecast_update, [:station_name, :port]), 
-            :AT => x -> collect(x) => :AT,
-            :DT => x -> collect(x) => :DT,
-            :ED => x -> collect(x) => :ED)
+            data_forecast_update = copy(data_forecast)
 
-            chargers_update = combined_data_forecast_update[:, [:station_name, :port]]
-            chargers_update = sort(chargers_update, :station_name)
-
-            if !(all(row -> any(r -> r == row, eachrow(unique_stations_ports)), eachrow(chargers_update)))
-                # CSV.write("chargers_update_wrong.csv", chargers_update)
-                error("Charger not in the unique_stations_ports")
-            end
-
-            missing_rows = filter(row -> !(row in eachrow(chargers_update)), eachrow(unique_stations_ports))
-            missing_rows = DataFrame(missing_rows) 
-            missing_rows.AT = fill(23.75, nrow(missing_rows))
-            missing_rows.DT = fill(23.75, nrow(missing_rows))
-            missing_rows.ED = fill(0.0, nrow(missing_rows))
-            missing_rows = combine(groupby(missing_rows, [:station_name, :port]), 
-            :AT => x -> collect(x) => :AT,
-            :DT => x -> collect(x) => :DT,
-            :ED => x -> collect(x) => :ED)
-
-            combined_data_forecast_update = vcat(combined_data_forecast_update, missing_rows)
-            combined_data_forecast_update = sort(combined_data_forecast_update, [:station_name, :port])
-
-            if size(combined_data_forecast_update, 1) != size(unique_stations_ports, 1)
-                error("Charger size mismatch")
-            end
+            update_time = (k - 1) * delta_t
+            arrived_sessions_today = filter(row -> row.AT <= update_time, data_today)
+            arrived_sessions_today.DT = floor.(Float64.(Dates.hour.(arrived_sessions_today.session_end_time_la)) + Float64.(Dates.minute.(arrived_sessions_today.session_end_time_la)) / 60, digits=2)
+            arrived_sessions_today.ED = arrived_sessions_today.total_energy_dispensed
+            arrived_charger_today = ev_to_charger(arrived_sessions_today)
             
             @variables model_mpc begin
                 P[k:N, 1:N_charger] >= 0
@@ -505,9 +483,18 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             # Constraints
             for i in 1:N_charger
                 # Extract the AT and DT for the j-th charger
-                AT_values = getfield.(combined_data_forecast_update.AT_function[i], 1)
-                DT_values = getfield.(combined_data_forecast_update.DT_function[i], 1)
-                ED_values = getfield.(combined_data_forecast_update.ED_function[i], 1)
+                AT_values = getfield.(data_forecast_update.AT_function[i], 1)
+                DT_values = getfield.(data_forecast_update.DT_function[i], 1)
+                ED_values = getfield.(data_forecast_update.ED_function[i], 1)
+                
+                # FIXME: Update with the arrived sessions
+                arrived_AT_values = getfield.(arrived_charger_today.AT_function[i], 1)
+                arrived_DT_values = getfield.(arrived_charger_today.DT_function[i], 1)
+                arrived_ED_values = getfield.(arrived_charger_today.ED_function[i], 1)
+
+
+
+
                 busy_idx = []
                 ED = 0 # Total energy demand of a charger
 
@@ -520,7 +507,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                     end
                 end
 
-                # FIXME: charger forecast not know the number of j, more loose version at the end of day meet ED
+                # NOTE: still need the different EDs for each occupancy period of real data and forecast
                 for j in eachindex(AT_values)
                     at_idx = ceil(Int, AT_values[j] / T * N) + 1
                     dt_idx = floor(Int, DT_values[j] / T * N) + 1
@@ -548,7 +535,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             end
             @constraint(model_mpc, [t=k:N], L[t] == sum(P[t, i] for i in 1:N_charger))
 
-        end
+        end # End of base EV or Charger
 
         # Peak horizons
         Index_onpeak = []
@@ -653,64 +640,19 @@ end
 
 
 ####################################################
-# Forecast is initialized daily and updated with the latest data at each time step
+# Forecast is initialized daily and updated with the latest data at each time steps
 
-# Daily updates:
 # V0G: Dumb charging with max power
 # Perfect forecast: AT, DT, ED, Nev are known, and real data is used
 # No forecast: Only do MPC with the arrival data
 # Persistence forecast: AT, DT, ED, Nev are the same as the previous daily data
 # Statistic forecast: AT, DT, Nev are the aggregate of M previous daily data, ED is divided by M
-
-# Real-time updates:
-# KNN forecast: AT, DT, ED are updated by combination of real data and forecast
-# GMM forecast: AT, DT, ED are forecasted by GMM model
-# ML forecast: AT, DT, ED are forecasted by ML model
+# ML forecast: AT, DT, ED are forecasted by ML (NN) model
 
 
 # TODO: GMM forecast
 function predict_gmm(data_input)
-    # Function to compute GMM density
-    function gmm_pdf(gmm, x)
-        density = 0.0
-        for i in 1:gmm.n
-            mu = gmm.μ[i]
-            sigma = sqrt(gmm.Σ[i])
-            weight = gmm.w[i]
-            density += weight * pdf(Normal(mu, sigma), x)
-        end
-        return density
-    end
-    # Load the GMM models from the file
-    models = load("best_gmms.jld")  # Adjust file extension based on actual file type
-    # Extract the individual GMM models from the loaded data
-    best_gmms = models["models"]
-    best_gmm_AT, best_gmm_DT, best_gmm_ED = best_gmms[1:3]
-    # Prepare arrays to store predictions
-    n = size(data_input, 1)
-    predict_gmm_AT = zeros(n)
-    predict_gmm_DT = zeros(n)
-    predict_gmm_ED = zeros(n)
-    # For each data point, find the most likely component and use its mean as the prediction, and then update with Ben's method
-    # https://docs.google.com/presentation/d/1EMBE8Me50NhXHq-kFVkho-nn2YyRwtEi_801p6mAHo4/edit?pli=1#slide=id.g1ee332c0660_1_245
-    # TODO: Not sure how to update the prediction with Ben's method
-    for i in 1:n
-        # Extract the data point
-        x = [data_input.AT[i], data_input.DT[i], data_input.ED[i]]
-        # Compute the likelihood of the data point under each GMM
-        likelihood_AT = gmm_pdf(best_gmm_AT, x[1])
-        likelihood_DT = gmm_pdf(best_gmm_DT, x[2])
-        likelihood_ED = gmm_pdf(best_gmm_ED, x[3])
-        # Find the most likely component for each feature
-        component_AT = argmax([likelihood_AT])
-        component_DT = argmax([likelihood_DT])
-        component_ED = argmax([likelihood_ED])
-        # Use the mean of the most likely component as the prediction
-        predict_gmm_AT[i] = best_gmm_AT.μ[component_AT]
-        predict_gmm_DT[i] = best_gmm_DT.μ[component_DT]
-        predict_gmm_ED[i] = best_gmm_ED.μ[component_ED]
-    end
-    return predict_gmm_AT, predict_gmm_DT, predict_gmm_ED
+    print("Predicting GMM...\n")
 end
 
 
@@ -727,7 +669,6 @@ function forecast_ev(data_today::DataFrame, method::String, updated_sessions::Da
         data_forecast.AT = ceil.(Float64.(Dates.hour.(data_forecast.session_start_time_la)) + Float64.(Dates.minute.(data_forecast.session_start_time_la)) / 60, digits=2)
         data_forecast.DT = floor.(Float64.(Dates.hour.(data_forecast.session_end_time_la)) + Float64.(Dates.minute.(data_forecast.session_end_time_la)) / 60, digits=2)
         data_forecast.ED = data_forecast.total_energy_dispensed
-        # data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
     elseif method == "Persistence"
         # Just do the MPC with data from the previous smart day (weekday, weekend, holiday)
         target_time = data_today.session_start_time_la[1]
@@ -743,7 +684,6 @@ function forecast_ev(data_today::DataFrame, method::String, updated_sessions::Da
         data_forecast.AT = ceil.(Float64.(Dates.hour.(data_forecast.session_start_time_la)) + Float64.(Dates.minute.(data_forecast.session_start_time_la)) / 60, digits=2)
         data_forecast.DT = floor.(Float64.(Dates.hour.(data_forecast.session_end_time_la)) + Float64.(Dates.minute.(data_forecast.session_end_time_la)) / 60, digits=2)
         data_forecast.ED = data_forecast.total_energy_dispensed
-        # data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
     elseif method == "Statistic"
         # Pick the closest M days
         M = 3
@@ -763,22 +703,52 @@ function forecast_ev(data_today::DataFrame, method::String, updated_sessions::Da
         data_forecast.AT = ceil.(Float64.(Dates.hour.(data_forecast.session_start_time_la)) + Float64.(Dates.minute.(data_forecast.session_start_time_la)) / 60, digits=2)
         data_forecast.DT = floor.(Float64.(Dates.hour.(data_forecast.session_end_time_la)) + Float64.(Dates.minute.(data_forecast.session_end_time_la)) / 60, digits=2)
         data_forecast.ED = data_forecast.total_energy_dispensed / M
-        # data_input.PD = ceil.(Dates.value.(data_input.charging_end_time_la - data_input.session_start_time_la) / (3600*1000), digits=2)
     end
 
     return data_forecast
 end
 
-# NOTE: for compatibility with MPC, output will be also in session not charger form
+function ev_to_charger(data_forecast::DataFrame)
+    combined_data_forecast_update = combine(groupby(data_forecast, [:station_name, :port]), 
+            :AT => x -> collect(x) => :AT,
+            :DT => x -> collect(x) => :DT,
+            :ED => x -> collect(x) => :ED)
+
+    chargers_update = combined_data_forecast_update[:, [:station_name, :port]]
+
+    if !(all(row -> any(r -> r == row, eachrow(unique_stations_ports)), eachrow(chargers_update)))
+        error("Charger not in the unique_stations_ports")
+    end
+
+    missing_rows = filter(row -> !(row in eachrow(chargers_update)), eachrow(unique_stations_ports))
+    missing_rows = DataFrame(missing_rows) 
+    missing_rows.AT = fill(23.75, nrow(missing_rows))
+    missing_rows.DT = fill(23.75, nrow(missing_rows))
+    missing_rows.ED = fill(0.0, nrow(missing_rows))
+    missing_rows = combine(groupby(missing_rows, [:station_name, :port]), 
+    :AT => x -> collect(x) => :AT,
+    :DT => x -> collect(x) => :DT,
+    :ED => x -> collect(x) => :ED)
+
+    combined_data_forecast_update = vcat(combined_data_forecast_update, missing_rows)
+    combined_data_forecast_update = sort(combined_data_forecast_update, [:station_name, :port])
+
+    if size(combined_data_forecast_update, 1) != size(unique_stations_ports, 1)
+        error("Charger size mismatch")
+    end
+
+    return combined_data_forecast_update
+end
+
+
+
 function forecast_charger(data_today::DataFrame, method::String, updated_sessions::DataFrame)
-    data_forecast = copy(data_today)
     forecast_list = ["Perfect", "Noforecast", "Persistence", "LSTM", "Transformer"]
     if method ∉ forecast_list
         error("Invalid forecast method")
-    elseif method in ["Perfect", "Noforecast"]
-        data_forecast.AT = ceil.(Float64.(Dates.hour.(data_forecast.session_start_time_la)) + Float64.(Dates.minute.(data_forecast.session_start_time_la)) / 60, digits=2)
-        data_forecast.DT = floor.(Float64.(Dates.hour.(data_forecast.session_end_time_la)) + Float64.(Dates.minute.(data_forecast.session_end_time_la)) / 60, digits=2)
-        data_forecast.ED = data_forecast.total_energy_dispensed
+    elseif method in ["Perfect", "Noforecast", "Persistence"]
+        data_forecast = forecast_ev(data_today, method, updated_sessions)
+        data_forecast = ev_to_charger(data_forecast)
     elseif method in ["LSTM", "Transformer"]
         # For each charger train NN model respectively
         Random.seed!(17)
@@ -813,24 +783,18 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
                     Dense(32 => 2, relu)
                 )
         elseif method == "Transformer"
+            # FIXME: not work
             position_encoding = PositionEncoding(32)
             add_position_encoding(x) = x .+ position_encoding(x)
             model_ml = Flux.Chain(
-                Embedding(1000 => 32), # vocab length is 1000
+                Embedding(2 => 32), # vocab length is 1000
                 add_position_encoding, # can also make anonymous
                 Dropout(0.1),
                 TransformerBlock(4, 32, 32 * 4; pdrop=0.1),
                 TransformerBlock(4, 32, 32 * 4; pdrop=0.1),
-                Dense(32, 1),
-                FlattenLayer(),
-                Dense(10, 3) # sentence length is 10, 3 labels
+                Dense(32 => 2)
                 )
         end
-
-        loss(x, y) = Flux.mse(model_ml(x), y)
-        combined_forecast = DataFrame(interval=DateTime[], occupancy=Float64[], ED=Float64[], station_name=String[], port=Int64[])
-        tic = time()
-        epochs = 50
 
         # Forecast today
         forecast = DataFrame(interval=collect(DateTime(today_update):Minute(15):DateTime(today_update) + Hour(23) + Minute(45)))
@@ -841,6 +805,9 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
         forecast_X = reshape(forecast_X, size(forecast_X, 1), size(forecast_X, 2), 1)
         forecast_X = convert(Array{Float32}, forecast_X)
 
+        combined_forecast = DataFrame(station_name = String[], port = Int[], AT = Float64[], DT = Float64[], ED = Float64[])
+        tic = time()
+        epochs = 30
 
         @showprogress for charger in eachrow(unique_stations_ports)
             charger_idx = findfirst(==(charger), eachrow(unique_stations_ports))
@@ -881,7 +848,7 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
             Flux.reset!(model_ml)
             opt = Flux.Adam()
             state = Flux.setup(opt, model_ml)
-            state = Flux.setup(OptimiserChain(WeightDecay(0.42), Adam(0.1)), model) # with l2 regularization
+            # FIXME: state = Flux.setup(OptimiserChain(WeightDecay(0.42), Adam(0.1)), model) # with l2 regularization
 
             for epoch in 1:epochs
                 Flux.train!(model_ml, loader, state) do m, x, y
@@ -889,8 +856,6 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
                 end
                 push!(losses, loss(X_train, y_train))
             end
-
-
 
 
             # Plot the loss curve
@@ -903,7 +868,6 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
 
             # Forecast today's occupancy and ED of this charger
             predictions = model_ml(forecast_X) |> cpu
-            # TODO: maybe ensure the occupancy is in binary with threshold?
             forecast[!, :occupancy] .= vec(predictions[1, :, 1])
             forecast[!, :normalized_ED] .= vec(predictions[2, :, 1]).* (ED_max - ED_min) .+ ED_min
             forecast[!, :station_name] .= charger.station_name
@@ -913,25 +877,24 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
             p_occupancy_ED = plot(forecast.interval, forecast.occupancy, label="Occupancy", title="Occupancy Forecast", size=(800, 600))
             plot!(forecast.interval, forecast.normalized_ED, label="ED", title="LSTM Forecast", size=(800, 600))
             savefig(p_occupancy_ED, path * "forecast.png")
-            combined_forecast = vcat(combined_forecast, forecast)
+
+            # NOTE: assume occupied when occupancy > 0.01
+            idx_occupied = findall(row -> row.occupancy > 1e-2, eachrow(forecast))
+            if isempty(idx_occupied)
+                forecast_station = DataFrame(station_name = charger.station_name, port = charger.port, AT = 23.75, DT = 23.75, ED = 0.0)
+            else
+                forecast_station = DataFrame(station_name = charger.station_name, port = charger.port, AT = first(idx_occupied) / N * T, DT = last(idx_occupied) / N * T, ED = sum(forecast[!, :normalized_ED]))
+            end
+            combined_forecast = vcat(combined_forecast, forecast_station)
         end
         toc = time()
         print("ML forecast for $today_update with $method is done in $(ceil(toc - tic)) seconds\n")
- 
-        # Convert to EV session form
-        combined_forecast[!, :ED] .= combined_forecast.occupancy .* combined_forecast.normalized_ED
-        combined_forecast = filter(row -> row.ED >= 0 && row.occupancy >= 0, combined_forecast)
-        # Add required columns for MPC input
-        combined_forecast[!, :driver_id] .= "dummy"  # Placeholder, replace with actual driver IDs if available
-        combined_forecast.AT = ceil.(Float64.(Dates.hour.(combined_forecast.interval)) + Float64.(Dates.minute.(combined_forecast.interval)) / 60, digits=2)
-        combined_forecast.DT = min.(combined_forecast.AT .+ 0.25, 23.75)
-        combined_forecast[!, :type] .= datetype.(combined_forecast.interval)
-        combined_forecast[!, :session_start_time_la] .= combined_forecast.interval
-        combined_forecast[!, :session_end_time_la] .= combined_forecast.interval .+ Minute(15)
-        combined_forecast[!, :total_energy_dispensed] .= combined_forecast.ED
-        combined_forecast = select(combined_forecast, [:driver_id, :session_start_time_la, :session_end_time_la, :total_energy_dispensed, :AT, :DT, :ED, :station_name, :port, :type])
 
-        data_forecast = copy(combined_forecast)
+        if size(combined_forecast, 1) != size(unique_stations_ports, 1)
+            error("Charger size mismatch")
+        end
+
+        data_forecast = ev_to_charger(combined_forecast)
     end
     return data_forecast
 end
