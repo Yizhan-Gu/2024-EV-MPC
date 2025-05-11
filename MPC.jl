@@ -16,7 +16,7 @@ print(pwd())
 ####################################################
 # Importing the necessary packages
 using Pkg
-packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays", "AutoMLPipeline", "StatsPlots", "IJulia", "Gurobi", "Flux", "MLJ", "TimeSeries", "Metal", "Optimisers"]
+packages = ["JuMP", "Ipopt", "LinearAlgebra", "Plots", "Random", "CSV", "DataFrames", "Statistics", "StatsBase", "ProgressMeter", "Dates", "DataFramesMeta", "Distributions", "JLD", "GaussianMixtures", "Holidays", "AutoMLPipeline", "StatsPlots", "IJulia", "Gurobi", "Flux", "MLJ", "TimeSeries", "Metal", "Optimisers", "OrderedCollections"]
 
 Pkg.Registry.update()
 for package in packages
@@ -395,6 +395,14 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             @constraint(model_mpc, [t=k:N], L[t] == sum(P[t, i] for i in 1:N_ev))
 
         elseif base == "Charger"
+            @variables model_mpc begin
+                P[k:N, 1:N_charger] >= 0
+                L[k:N] >= 0
+                E[k:N, 1:N_charger] >= 0
+                gamma_nc_k >= 0
+                gamma_onpeak_k >= 0
+            end
+
             # SECTION: Preprocessing
             if method == "Perfect"
                 data_forecast_update = copy(data_forecast)
@@ -419,9 +427,13 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                 elseif method in ["Persistence", "LSTM", "Transformer"]
                     # Need to update the data_forecast_update
                     data_forecast_update = copy(data_forecast)
-                    updated_ed = zeros(size(data_forecast_update, 1))
-                    valid_occupied_idx = [Int[] for _ in 1:size(data_forecast_update, 1)]
-                    valid_vacant_idx = [Int[] for _ in 1:size(data_forecast_update, 1)]
+                    if size(data_forecast_update, 1) != N_charger
+                        error("The number of chargers in the forecast data is not equal to the number of chargers in the arrived data")
+                    end
+                    charger_ed = zeros(N_charger)
+                    valid_occupied_idx = [Int[] for _ in 1:N_charger]
+                    valid_vacant_idx = [Int[] for _ in 1:N_charger]
+                    modified_forecast_ed = zeros(N_charger)
 
                     for i_ch in 1:N_charger
                         oc_arrived = arrived_charger_today.oc_matrix[i_ch]
@@ -434,17 +446,18 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                         # NOTE: 2 cases: 1) last_occupied_idx >= k, 2) last_occupied_idx < k
                         if sum(oc_forecast) == 0 || isempty(oc_forecast[max(k, last_occupied_idx)+1:end])
                             valid_occupied_idx[i_ch] = collect(intersect(busy_idx, k:N))
-                            modified_forecast_ed = 0
+                            modified_forecast_ed[i_ch] = 0
                         elseif k <= last_occupied_idx
                             valid_occupied_idx[i_ch] = collect(intersect(busy_idx, k:N))
-                            modified_forecast_ed = data_forecast_update.ED[i_ch] * sum(oc_forecast[last_occupied_idx+1:end]) / sum(oc_forecast)
+                            modified_forecast_ed[i_ch] = data_forecast_update.ED[i_ch] * sum(oc_forecast[last_occupied_idx+1:end]) / sum(oc_forecast)
+                            @constraint(model_mpc, E[last_occupied_idx, i_ch] == arrived_charger_today.ED[i_ch]) # To make sure only arrived ED is charged
                         elseif k > last_occupied_idx # including no arrived EVs that last_occupied_idx = 0
                             valid_occupied_idx[i_ch] = collect(intersect(busy_idx, k+1:N))
-                            modified_forecast_ed = data_forecast_update.ED[i_ch] * sum(oc_forecast[k+1:end]) / sum(oc_forecast)
+                            modified_forecast_ed[i_ch] = data_forecast_update.ED[i_ch] * sum(oc_forecast[k+1:end]) / sum(oc_forecast)
                         end
 
                         valid_vacant_idx[i_ch] = collect(setdiff(k:N, valid_occupied_idx[i_ch]))
-                        updated_ed[i_ch] = arrived_charger_today.ED[i_ch] + modified_forecast_ed
+                        charger_ed[i_ch] = arrived_charger_today.ED[i_ch] + modified_forecast_ed[i_ch]
                     end
                 end
             end
@@ -453,18 +466,21 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
                 E_tmp = zeros(N_charger)
             end
 
-            ED = updated_ed
+            if method in ["Perfect", "Noforecast"]
+                ED = data_forecast_update.ED
+                valid_occupied_idx = [Int[] for _ in 1:N_charger]
+                valid_vacant_idx = [Int[] for _ in 1:N_charger]
+                for i_ch in 1:N_charger
+                    busy_idx = findall(x -> x == 1, data_forecast_update.oc_matrix[i_ch])
+                    valid_occupied_idx[i_ch] = collect(intersect(busy_idx, k:N))
+                    valid_vacant_idx[i_ch] = collect(setdiff(k:N, valid_occupied_idx[i_ch]))
+                end
+            else
+                ED = charger_ed
+            end
             ED_max = zeros(N_charger)
 
             # SECTION: MPC optimization
-            @variables model_mpc begin
-                P[k:N, 1:N_charger] >= 0
-                L[k:N] >= 0
-                E[k:N, 1:N_charger] >= 0
-                gamma_nc_k >= 0
-                gamma_onpeak_k >= 0
-            end
-
             # Constraints
             for i in 1:N_charger
                 @constraint(model_mpc, E[k, i] == E_tmp[i] + P[k, i] * delta_t)
@@ -474,12 +490,12 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
 
                 # Check ED valivity
                 ED_max[i] = E_tmp[i] + P_max * length(valid_occupied_idx[i]) * delta_t
-                if ED[i] > ED_max[i]
+                if ED[i] > ED_max[i] + 1e-4 # Computing small error but does not affect solving MPC
                     print("ED is too large ", "forecast ED:", ED[i], "ED_max: ", ED_max[i], "arrived ED:", arrived_charger_today.ED[i], "\n")
                     ED[i] = ED_max[i]
                 end
                 
-                if E_tmp[i] > ED[i]
+                if E_tmp[i] > ED[i] + 1e-4
                     print("ED is too small", "ED", ED[i], "E_tmp", E_tmp[i], "\n")
                 end
 
@@ -656,6 +672,13 @@ function forecast_ev(data_today::DataFrame, method::String, updated_sessions::Da
         data_forecast.ED = data_forecast.total_energy_dispensed / M
     end
 
+    # NOTE: Since we shorten the time period for charging, some real ED > P_max * delta_t * (DT_idx - AT_idx)
+    data_forecast.AT_idx = ceil.(Int, data_forecast.AT / T * N) .+ 1
+    data_forecast.DT_idx = floor.(Int, data_forecast.DT / T * N) .+ 1
+    data_forecast.overMaxPower = data_forecast.ED .> P_max * delta_t * (data_forecast.DT_idx - data_forecast.AT_idx .+ 1)
+    data_forecast = data_forecast[data_forecast.overMaxPower .== false, :]
+    select!(data_forecast, Not(:AT_idx, :DT_idx, :overMaxPower))
+
     return data_forecast
 end
 
@@ -666,7 +689,7 @@ function ev_to_charger(data_forecast::DataFrame)
     oc_matrix = zeros(n_chargers, bin_count)
     ED_vector = zeros(Float64, n_chargers)
     charger_idx = Dict((row.station_name, row.port) => i for (i, row) in enumerate(eachrow(unique_stations_ports)))
-
+    
     for row in eachrow(data_forecast)
         key = (row.station_name, row.port)
         haskey(charger_idx, key) || continue
@@ -805,9 +828,9 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
 
             for epoch in 1:epochs
                 Flux.train!(model_ml, loader, state) do m, x, y
-                    Flux.mse(m(x), y)
+                    Flux.Losses.mse(m(x), y)
                 end
-                push!(losses, loss(X_train, y_train))
+                push!(losses, Flux.Losses.mse(X_train, y_train))
             end
 
             # Plot the loss curve
@@ -827,7 +850,7 @@ function forecast_charger(data_today::DataFrame, method::String, updated_session
 
             # Plot the forecasted occupancy and ED
             p_occupancy_ED = plot(forecast.interval, forecast.occupancy, label="Occupancy", title="Occupancy Forecast", size=(800, 600))
-            plot!(forecast.interval, forecast.normalized_ED, label="ED", title="LSTM Forecast", size=(800, 600))
+            plot!(forecast.interval, forecast.real_ED, label="ED", title="LSTM Forecast", size=(800, 600))
             savefig(p_occupancy_ED, path * "forecast.png")
 
             # NOTE: assume occupied when occupancy > 0.1
@@ -971,22 +994,22 @@ L_V0G, L_charger_transformer = daily_update(data_test, "Transformer", "Charger")
 ####################################################
 # SECTION: Results
 
+using OrderedCollections
+L_plot = OrderedDict{String, Any}([
+    "V0G" => L_V0G,
+    "Perfect_ev" => L_ev_perfect,
+    "Noforecast_ev" => L_ev_noforecast,
+    "Persistence_ev" => L_ev_persistence,
+    "Statistic_ev" => L_ev_statistic,
+    "Perfect_charger" => L_charger_perfect,
+    "Noforecast_charger" => L_charger_noforecast,
+    "Persistence_charger" => L_charger_persistence,
+    "LSTM_charger" => L_charger_lstm
+    # "Transformer_charger" => L_charger_transformer
+])
+
 # Load plot
-L_plot = Dict{String, Any}()
-L_plot["V0G"] = L_V0G
-L_plot["Perfect_ev"] = L_ev_perfect
-L_plot["Noforecast_ev"] = L_ev_noforecast
-L_plot["Persistence_ev"] = L_ev_persistence
-L_plot["Statistic_ev"] = L_ev_statistic
-L_plot["Perfect_charger"] = L_charger_perfect
-L_plot["Noforecast_charger"] = L_charger_noforecast
-L_plot["Persistence_charger"] = L_charger_persistence
-L_plot["LSTM_charger"] = L_charger_lstm
-L_plot["Transformer_charger"] = L_charger_transformer
-
-
-
-function load_plot(L_plot; methods_to_show::Vector{String})
+function load_plot(L_plot; methods_to_show::Vector{String}, show_hist::Bool=true)
     all_intervals = DataFrame(interval = [DateTime(minimum(days)) + Minute(15 * (i - 1)) for i in 1:N * length(days)])
     floored_AT = Dates.floor.(data_test.session_start_time_la, Minute(15))
     floored_DT = Dates.floor.(data_test.session_end_time_la, Minute(15))
@@ -1005,14 +1028,16 @@ function load_plot(L_plot; methods_to_show::Vector{String})
     end
 
     xlim = extrema(vcat(df_AT.interval, df_DT.interval, df_all_loads.time))
-    hist_AT = bar(df_AT.interval, df_AT.count, xlabel="AT", ylabel="Sessions", label="AT", color=:lightblue, alpha=0.7, size=(1400, 600), dpi=300, xlims=xlim)
-    hist_DT = bar(df_DT.interval, df_DT.count, xlabel="DT", ylabel="Sessions", label="DT", color=:lightblue, alpha=0.7, size=(1400, 600), dpi=300, xlims=xlim)
+    if show_hist
+        hist_AT = bar(df_AT.interval, df_AT.count, xlabel="AT", ylabel="Sessions", label="AT", color=:lightblue, alpha=0.7, size=(1400, 600), dpi=300, xlims=xlim)
+        hist_DT = bar(df_DT.interval, df_DT.count, xlabel="DT", ylabel="Sessions", label="DT", color=:lightblue, alpha=0.7, size=(1400, 600), dpi=300, xlims=xlim)
+    end
 
     p_load_combined = plot(df_all_loads.time, df_all_loads[!, methods_to_show[1]],
         label=methods_to_show[1],
         xlabel="Timestamp",
         ylabel="Load (kW)",
-        size=(1400, 600),
+        size=(3000, 600),
         dpi=300,
         legend=:topright,
         legendfontsize=10,
@@ -1021,12 +1046,15 @@ function load_plot(L_plot; methods_to_show::Vector{String})
         plot!(df_all_loads.time, df_all_loads[!, method], label=method)
     end
 
-    p = plot(hist_AT, hist_DT, p_load_combined, layout=grid(3, 1, heights=[0.2 ,0.2, 0.6]), size=(3000, 1000))
-    return p
+    if show_hist
+        return plot(hist_AT, hist_DT, p_load_combined, layout=grid(3, 1, heights=[0.2 ,0.2, 0.6]), size=(3000, 1000))
+    else
+        return p_load_combined
+    end
 end
 
-p_load_ev = load_plot(L_plot, methods_to_show=["V0G", "Perfect_ev", "Noforecast_ev", "Persistence_ev", "Statistic_ev"])
-p_load_charger = load_plot(L_plot, methods_to_show=["V0G", "Perfect_charger", "Noforecast_charger", "Persistence_charger"])
+p_load_ev = load_plot(L_plot, methods_to_show=["V0G", "Perfect_ev", "Noforecast_ev", "Persistence_ev", "Statistic_ev"], show_hist = true)
+p_load_charger = load_plot(L_plot, methods_to_show=["V0G", "Perfect_charger", "Noforecast_charger", "Persistence_charger", "LSTM_charger"], show_hist = true)
 p_load = plot(p_load_ev, p_load_charger, layout=grid(2, 1), size=(3000, 2000))
 savefig(p_load, "Load_All.png")
 
@@ -1107,11 +1135,21 @@ CSV.write("Cost_All.csv", df_cost)
 
 methods = names(df_cost)[2:end]
 data_columns = hcat([df_cost[!, method] for method in methods]...)
+x_labels = string.(df_cost.day)  # Convert Date to String
 
-p_cost = groupedbar(data_columns,
-                    label=permutedims(methods), xlabel="Day", ylabel="Cost", 
-                    bar_width=0.7, size=(800, 600), dpi=300, legend=:topright, 
-                    title="Cost Comparison", bar_position = :dodge)
+p_cost = groupedbar(
+    x_labels,                    # Explicit x-axis labels
+    data_columns,
+    label=permutedims(methods),
+    xlabel="Day",
+    ylabel="Cost (USD)",
+    bar_width=0.7,
+    size=(1000, 600),
+    dpi=300,
+    legend=:topleft,
+    title="Cost Comparison",
+    bar_position = :dodge
+)
 
 
 savefig(p_cost, "Cost_All.png")
