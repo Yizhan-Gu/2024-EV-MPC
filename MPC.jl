@@ -50,7 +50,7 @@ TransformerBlock(4, 32, 128; pdrop=0.1)
 print("\033c") # Or REPL: Ctrl + L
 
 ####################################################
-#= Data preprocessing
+# Data preprocessing
 CP_data = CSV.read("CP_UCSD_clean_Jul16_Sep24.csv", DataFrame)
 print(first(CP_data))
 
@@ -83,7 +83,7 @@ CP_data_clean_train = filter(row -> Dates.year(row.session_start_time_la) <= 202
 CP_data_clean_test = filter(row -> Dates.year(row.session_start_time_la) == 2023 && Dates.month(row.session_start_time_la) >= 7 && Dates.month(row.session_start_time_la) <= 9, CP_data_clean)
 CSV.write("train_charging_sessions.csv", CP_data_clean_train)
 CSV.write("test_charging_sessions.csv", CP_data_clean_test)
-=#
+
 
 ####################################################
 # Read data and plot statistics
@@ -533,6 +533,7 @@ function run_mpc(data_forecast::DataFrame, data_today::DataFrame, method::String
             error("Index_onpeak and Index_offpeak error")
         end
 
+        # FIXME: the gamma should be maxof the daily previous values and the current value
         @constraint(model_mpc, [t=k:N], gamma_nc_k >= L[t])
         # @constraint(model, gamma_nc_k .>= L)
         # @constraint(model, [t=k:N], gamma_nc_k == maximum(L[t])) # This is not working for IPOPT
@@ -912,6 +913,7 @@ function daily_update(data_input::DataFrame, method::String, base::String)
     updated_sessions.type = datetype.(updated_sessions.session_start_time_la)
     L_mpc_dict = Dict{Date, Any}()
     L_V0G_dict = Dict{Date, Any}()
+    Forecast_dict = Dict{Date, Any}()
 
     println("Daily update with $method\n")
     tic = time()
@@ -929,11 +931,12 @@ function daily_update(data_input::DataFrame, method::String, base::String)
         L_mpc_tmp = run_mpc(data_forecast, data_today, method, base);
         updated_sessions = copy(tmp_sessions)
         L_mpc_dict[today_update] = L_mpc_tmp
+        Forecast_dict[today_update] = data_forecast
     end
     toc = time()
     println("Daily update with $method in $(ceil(toc - tic)) seconds\n")
     
-    return L_V0G_dict, L_mpc_dict
+    return L_V0G_dict, L_mpc_dict, Forecast_dict
 end
 
 ####################################################
@@ -968,33 +971,23 @@ method = "Persistence"
 base = "Charger"
 
 # EV testing
-L_V0G, L_ev_perfect = daily_update(data_test, "Perfect", "EV");
-L_V0G, L_ev_noforecast = daily_update(data_test, "Noforecast", "EV");
-L_V0G, L_ev_persistence = daily_update(data_test, "Persistence", "EV");
-L_V0G, L_ev_statistic = daily_update(data_test, "Statistic", "EV");
+L_V0G, L_ev_perfect, forecast_ev_perfect = daily_update(data_test, "Perfect", "EV");
+L_V0G, L_ev_noforecast, forecast_ev_noforecast = daily_update(data_test, "Noforecast", "EV");
+L_V0G, L_ev_persistence, forecast_ev_persistence = daily_update(data_test, "Persistence", "EV");
+L_V0G, L_ev_statistic, forecast_ev_statistic = daily_update(data_test, "Statistic", "EV");
 
 # Charger testing
-L_V0G, L_charger_perfect = daily_update(data_test, "Perfect", "Charger");
-L_V0G, L_charger_noforecast = daily_update(data_test, "Noforecast", "Charger");
-L_V0G, L_charger_persistence = daily_update(data_test, "Persistence", "Charger");
-L_V0G, L_charger_lstm = daily_update(data_test, "LSTM", "Charger");
-L_V0G, L_charger_transformer = daily_update(data_test, "Transformer", "Charger");
-
-
-
-
-
-
-
-
-
+L_V0G, L_charger_perfect, forecast_charger_perfect = daily_update(data_test, "Perfect", "Charger");
+L_V0G, L_charger_noforecast, forecast_charger_noforecast = daily_update(data_test, "Noforecast", "Charger");
+L_V0G, L_charger_persistence, forecast_charger_persistence = daily_update(data_test, "Persistence", "Charger");
+L_V0G, L_charger_lstm, forecast_charger_lstm = daily_update(data_test, "LSTM", "Charger");
+L_V0G, L_charger_transformer, forecast_charger_transformer = daily_update(data_test, "Transformer", "Charger");
 
 
 
 ####################################################
 # SECTION: Results
 
-using OrderedCollections
 L_plot = OrderedDict{String, Any}([
     "V0G" => L_V0G,
     "Perfect_ev" => L_ev_perfect,
@@ -1007,6 +1000,50 @@ L_plot = OrderedDict{String, Any}([
     "LSTM_charger" => L_charger_lstm
     # "Transformer_charger" => L_charger_transformer
 ])
+
+# Save the load results
+folder = "Load_mpc"
+isdir(folder) || mkdir(folder)
+
+for (name, date_dict) in L_plot
+    dates = sort(collect(keys(date_dict)))
+    n_rows = length(dates)
+    n_cols = length(date_dict[dates[1]])
+    data = Matrix{Float64}(undef, n_rows, n_cols)
+    row_labels = String[]
+    for (i, d) in enumerate(dates)
+        data[i, :] .= round.(date_dict[d], digits=4)
+        push!(row_labels, string(d))
+    end
+    df = DataFrame(data, :auto)
+    df = hcat(DataFrame(Date=row_labels), df)
+    CSV.write(joinpath(folder, "Load_$name.csv"), df)
+end
+
+Forecasts = OrderedDict{String, Any}([
+    "Perfect_ev" => forecast_ev_perfect,
+    "Noforecast_ev" => forecast_ev_noforecast,
+    "Persistence_ev" => forecast_ev_persistence,
+    "Statistic_ev" => forecast_ev_statistic,
+    "Perfect_charger" => forecast_charger_perfect,
+    "Noforecast_charger" => forecast_charger_noforecast,
+    "Persistence_charger" => forecast_charger_persistence,
+    "LSTM_charger" => forecast_charger_lstm
+    # "Transformer_charger" => forecast_charger_transformer
+])
+
+# Save the forecast results
+folder_forecast = "Forecasts"
+isdir(folder_forecast) || mkdir(folder_forecast)
+
+for (name, date_dict) in Forecasts
+    for (d, df) in date_dict
+        filename = joinpath(folder_forecast, "Forecast_$(name)_$(d).csv")
+        CSV.write(filename, df)
+    end
+end
+
+
 
 # Load plot
 function load_plot(L_plot; methods_to_show::Vector{String}, show_hist::Bool=true)
@@ -1116,7 +1153,8 @@ function daily_cost(L_plot)
             demand_charge = r_power_nc * gamma_nc + r_power_onpeak * gamma_onpeak
             energy_charge = delta_t * sum(r_energy_offpeak * L_daily[t] for t in Index_offpeak) + 
                                                 delta_t * sum(r_energy_onpeak * L_daily[t] for t in Index_onpeak)
-            cost = demand_charge + energy_charge
+            other_charge = 0.0578 * (demand_charge + energy_charge) + (0.0058 + 0.00058 + 0.0003) * sum(L_daily) * delta_t
+            cost = demand_charge + energy_charge + other_charge
             Cost_dict[method][today_update] = cost
         end
     end
@@ -1133,13 +1171,10 @@ df_cost = daily_cost(L_plot)
 CSV.write("Cost_All.csv", df_cost)
 
 
-methods = names(df_cost)[2:end]
-data_columns = hcat([df_cost[!, method] for method in methods]...)
-x_labels = string.(df_cost.day)  # Convert Date to String
 
 p_cost = groupedbar(
-    x_labels,                    # Explicit x-axis labels
-    data_columns,
+    string.(df_cost.day),
+    hcat([df_cost[!, method] for method in names(df_cost)[2:end]]...),
     label=permutedims(methods),
     xlabel="Day",
     ylabel="Cost (USD)",
@@ -1150,6 +1185,81 @@ p_cost = groupedbar(
     title="Cost Comparison",
     bar_position = :dodge
 )
-
-
 savefig(p_cost, "Cost_All.png")
+
+
+# Forecast error
+Charger_forecast = OrderedDict{String, Any}([
+    "Perfect" => forecast_charger_perfect,
+    "Noforecast" => forecast_charger_noforecast,
+    "Persistence" => forecast_charger_persistence,
+    "LSTM" => forecast_charger_lstm
+])
+
+# TODO: maybe better plot, violin?
+# https://docs.juliaplots.org/dev/generated/statsplots/
+function forecast_error(Charger_forecast)
+    ed_metrics = Dict{String, Dict{Date, Dict{String, Float64}}}()
+
+    for method in keys(Charger_forecast)
+        ed_metrics[method] = Dict{Date, Dict{String, Float64}}()
+        for today_update in days
+            forecast = Charger_forecast[method][today_update]
+            perfect = Charger_forecast["Perfect"][today_update]
+
+            abs_error = abs.(forecast.ED .- perfect.ED)
+            mse = mean(abs_error .^ 2)
+            mae = mean(abs_error)
+            rmse = sqrt(mse)
+
+            ed_metrics[method][today_update] = Dict(
+                "MSE" => mse,
+                "MAE" => mae,
+                "RMSE" => rmse,
+            )
+        end
+    end
+    return ed_metrics
+end
+
+ed_metrics = forecast_error(Charger_forecast)
+
+function flatten_ed_metrics(ed_metrics)
+    rows = []
+    for (method, date_dict) in ed_metrics
+        for (date, metric_dict) in date_dict
+            for (metric, value) in metric_dict
+                push!(rows, (method=method, date=date, metric=metric, value=value))
+            end
+        end
+    end
+    return DataFrame(rows)
+end
+
+df_metrics = flatten_ed_metrics(ed_metrics)
+
+@df df_metrics groupedbar(:date, :value, group = :method, bar_position = :dodge,
+                          layout = (1, length(keys(ed_metrics))), by = :metric,
+                          legend = :top, xlabel = "Date", ylabel = "Error",
+                          title = "Forecast", size = (2000, 600),
+                          dpi = 300, bar_width = 0.7,
+                          titlefontsize = 12, labelfontsize = 10,
+                          tickfontsize = 10, xtickfontsize = 10,
+                          ytickfontsize = 10)
+
+savefig("Forecast_Error.png")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+       
