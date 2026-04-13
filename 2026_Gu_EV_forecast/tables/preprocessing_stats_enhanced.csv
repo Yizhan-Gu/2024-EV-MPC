@@ -1,9 +1,9 @@
 step,rows
-raw_clean_file_rows,375486
-drop_missing_core,375486
-drop_dcfc_like_stations,347164
-physical_bounds,346732
-same_day_only,346732
-deduplicate,346732
-iqr_outlier_filter,339409
-effective_kw_filter,335035
+raw_rows,445658
+drop_missing_core,434382
+keep_level2,399594
+physical_bounds,381397
+same_day_only,347352
+deduplicate,347352
+iqr_outlier_filter,340229
+effective_kw_filter,340060
