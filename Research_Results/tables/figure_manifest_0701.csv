@@ -1,8 +1,0 @@
-file,core_question
-0701_fig01_load_curves_all_methods.png,How all methods reshape load under fixed MPC
-0701_fig02_cost_barh.png,Which method minimizes cost by case
-0701_fig03_saving_grouped.png,Which method yields highest saving by case
-0701_fig04_dumbbell_ev_vs_charger_cost.png,How EV and Charger differ for each method
-0701_fig05_peak_cost_bubble.png,What cost-peak-savings tradeoff exists
-0701_fig06_error_vs_saving.png,How forecast error maps to control gain
-0701_fig07_rank_card.png,Which methods are top-ranked per case

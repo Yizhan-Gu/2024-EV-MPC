@@ -1,7 +1,0 @@
-,daily_cost,daily_cost,daily_cost,daily_cost,daily_cost,peak_load,peak_load,peak_load,peak_load,total_energy,total_energy,total_energy,total_energy
-,count,mean,std,min,max,mean,std,min,max,mean,std,min,max
-method,,,,,,,,,,,,,
-Noforecast,3,2294.13,981.68,1448.19,3370.53,310.25,34.21,270.74,330.0,1922.67,822.73,1213.7,2824.79
-Perfect,3,2294.13,981.68,1448.19,3370.53,310.25,34.21,270.74,330.0,1922.67,822.73,1213.7,2824.79
-Persistence,3,2294.13,981.68,1448.19,3370.53,310.25,34.21,270.74,330.0,1922.67,822.73,1213.7,2824.79
-Statistic,3,2294.13,981.68,1448.19,3370.53,310.25,34.21,270.74,330.0,1922.67,822.73,1213.7,2824.79

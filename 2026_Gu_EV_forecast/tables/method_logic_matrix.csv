@@ -1,0 +1,13 @@
+method,temporal,multimodal_static,probabilistic,interval_output,deep_learning
+Perfect,0,0,0,0,0
+Noforecast,0,0,0,0,0
+Persistence,1,0,0,0,0
+Statistic,1,0,0,0,0
+GMM,0,1,0,0,0
+LSTM,1,0,0,0,1
+TCN,1,0,0,0,1
+Transformer,1,0,0,0,1
+iTransformer,1,0,0,0,1
+iTransformer_CP90,1,0,1,1,1
+TFT_p50,1,0,1,1,1
+DeepAR_Gaussian_p50,1,0,1,1,1
