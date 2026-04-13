@@ -1,8 +1,11 @@
-file,core_question
-0701_fig01_load_curves_all_methods.png,How all current methods reshape load under fixed MPC
-0701_fig02_cost_barh.png,Which updated method minimizes MPC cost by case
-0701_fig03_saving_grouped.png,Which updated method yields highest saving by case
-0701_fig04_dumbbell_ev_vs_charger_cost.png,How EV and Charger differ for each updated method
-0701_fig05_peak_cost_bubble.png,What cost-peak-savings tradeoff exists with updated methods
-0701_fig06_error_vs_saving.png,How timing/energy forecast error maps to control gain
-0701_fig07_rank_card.png,Which updated methods are top-ranked per case
+file,core_question,note
+fig01_load_curves_all_methods.png,How all methods reshape load under fixed MPC,Canonical load-curve view
+fig02_cost_barh.png,Which method minimizes strict-fair MPC cost by case,Charger rows include exact-energy reconciliation cost
+fig03_saving_grouped.png,Which method yields highest strict-fair saving,Uses equal-energy comparison
+fig04_dumbbell_ev_vs_charger_cost.png,How EV and Charger scopes differ under equal-energy fairness,Direct paired comparison
+fig05_peak_cost_bubble.png,What peak-cost-saving tradeoff exists,Bubble size encodes saving
+fig06_error_vs_saving.png,How forecast timing/energy error maps to control gain,"Left panel timing error, right panel RMSE"
+fig07_rank_card.png,Which methods are top-ranked per case,Ranking uses strict-fair savings
+fig08_forecast_error_heatmap.png,How forecast errors compare across methods,Heatmap values are normalized errors; 1 means worst among methods
+fig09_skill_map_time_vs_energy.png,Which methods jointly improve timing and energy prediction,Bubble size uses EV-side strict-fair saving
+fig10_all_methods_vs_perfect_two_panel.png,How all forecast methods track the perfect energy time series,Non-zero methods are plotted; all-zero methods are annotated as text per panel

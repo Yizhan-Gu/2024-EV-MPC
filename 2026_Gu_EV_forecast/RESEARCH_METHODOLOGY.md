@@ -1,253 +1,247 @@
-# EV Forecast-to-MPC Methodology (Refined 0701 Version)
+# EV Forecast-to-MPC Methodology (Strict Equal-Energy 0701 Version)
 
-## 1. Study Scope
+## 1. Scope and Fairness Principle
 
-This work compares forecasting methods under one fixed rolling MPC controller.
-Only the forecast module changes; the control objective/constraints stay unchanged.
+This study evaluates multiple forecast modules under one fixed rolling MPC core.
+Only the forecast module changes. Controller objective and tariff parameters are fixed.
 
-Methods kept for comparison:
-- Perfect
-- Noforecast
-- Persistence
-- Statistic
-- GMM
-- LSTM
-- TCN
-- Transformer
-- iTransformer
+Benchmark day:
+- 2023-07-01 only
 
-Added methods:
-- iT-CP90 (iTransformer-TCN blended point forecast + conformal 90% interval)
-- iT-CP95 (same backbone + conformal 95% interval)
-- TFT-Quantile (p10/p50/p90)
-- DeepAR-Gaussian (distribution sampling)
-- ITCN-ChargerAware (charger-focused hybrid assignment)
+Output root:
+- 2026_Gu_EV_forecast/
+
+Key fairness requirement used in this version:
+- EV and Charger comparisons are reported under equal total dispatched energy.
+- No energy tolerance is allowed in the strict table: strict energy gap is forced to 0%.
 
 ---
 
-## 2. Single Data Source and Reproducibility
-
-Official EV input file:
-- `clean_charging_sessions.csv`
-
-Project output root:
-- `2026_Gu_EV_forecast/`
+## 2. Data and Reproducibility Artifacts
 
 Main notebook:
-- `Research_Results/EV_Charging_Optimization_Research.ipynb`
+- 2026_Gu_EV_forecast/EV_Charging_Optimization_Research.ipynb
 
-All comparison figures are stored in one folder only:
-- `2026_Gu_EV_forecast/figures/0701/`
+Core tables:
+- 2026_Gu_EV_forecast/tables/result_0701_only.csv
+- 2026_Gu_EV_forecast/tables/result_0701_strict_equal_energy.csv
+- 2026_Gu_EV_forecast/tables/sanity_check_0701_strict.csv
+- 2026_Gu_EV_forecast/tables/forecast_quality_0701_detailed.csv
+- 2026_Gu_EV_forecast/tables/figure_manifest_0701.csv
 
-Tables:
-- `2026_Gu_EV_forecast/tables/forecast_quality_0701_detailed.csv`
-- `2026_Gu_EV_forecast/tables/forecast_quality_0701_all_methods.csv`
-- `2026_Gu_EV_forecast/tables/mpc_result_0701_extended_methods.csv`
-- `2026_Gu_EV_forecast/tables/sanity_check_0701.csv`
-
----
-
-## 3. Unified Notation (Used by All Methods)
-
-For each charging session $i$:
-- Arrival index: $AT_i \in \{1,\dots,96\}$
-- Departure index: $DT_i \in \{1,\dots,96\}$
-- Energy demand: $ED_i$ (kWh)
-- Charger id: $c_i$
-
-Time step length:
-- $\Delta t = 0.25$ hour
-
-Day-level forecast targets (96 bins):
-- Arrival-count profile: $A_t$
-- Arrival-energy profile: $E_t$
-- Departure-count profile: $D_t$
-
-Session-level feasibility condition:
-$$
-ED_i \le P_{\max}\,\Delta t\,(DT_i-AT_i+1)
-$$
+Main figure folder:
+- 2026_Gu_EV_forecast/figures/0701/
 
 ---
 
-## 4. Preprocessing from clean_charging_sessions
+## 3. Unified Notation
 
-Pipeline:
-1. Parse timestamps and energy numeric type.
-2. Drop missing core fields.
-3. Remove likely DCFC rows by station-name keywords.
-4. Keep physical bounds for energy and duration.
-5. Keep same-day sessions only.
-6. Deduplicate by session signature.
-7. Apply IQR outlier filtering.
-8. Apply effective-power filter.
+Session-level symbols:
+- Session index: i
+- Charger index: c
+- Time slot index: t in {1,...,96}
+- Arrival slot: AT_i
+- Departure slot: DT_i
+- Session energy demand: ED_i (kWh)
+- Slot duration: Delta_t = 0.25 h
+- Per-port max power: P_max = 6.6 kW
 
-Outputs:
-- `2026_Gu_EV_forecast/clean_charging_sessions_enhanced.csv`
-- `2026_Gu_EV_forecast/tables/preprocessing_stats_enhanced.csv`
+Day-level profile symbols:
+- A_t: arrival-count profile
+- D_t: departure-count profile
+- E_t: arrival-energy profile
+- Hat symbols indicate forecasts.
+
+Feasibility bound:
+ED_i <= P_max * Delta_t * (DT_i - AT_i + 1)
 
 ---
 
-## 5. What Is Forecasted and What Is Compared
+## 4. Forecasting Modules and Math Definitions
 
-### 5.1 Timing quality (explicit)
-Timing is evaluated by distribution error, not by ambiguous "session error":
-- Arrival-time distribution error:
-$$
-\mathrm{W1}_{AT} = W_1\big(\hat{A}_t, A_t\big)
-$$
-- Departure-time distribution error:
-$$
-\mathrm{W1}_{DT} = W_1\big(\hat{D}_t, D_t\big)
-$$
+### 4.1 Perfect
+Use true target-day sessions directly:
+- (AT_i, DT_i, ED_i, c_i)
 
-Interpretation:
-- Smaller is better.
-- Unit is 15-min-bin transport distance.
+### 4.2 Noforecast
+Use an empty future set.
+MPC only reacts to currently arrived sessions.
 
-### 5.2 Energy quality (explicit)
-- Interval-level arrival-energy MAE/RMSE:
-$$
-\mathrm{MAE}_E=\frac{1}{96}\sum_{t=1}^{96}|\hat{E}_t-E_t|,
-\qquad
-\mathrm{RMSE}_E=\sqrt{\frac{1}{96}\sum_{t=1}^{96}(\hat{E}_t-E_t)^2}
-$$
-- Daily total-energy error (%):
-$$
-\mathrm{Err}_{\Sigma E}(\%)=\frac{|\sum_t\hat{E}_t-\sum_tE_t|}{\sum_tE_t}\times 100
-$$
-- Daily session-count error (%):
-$$
-\mathrm{Err}_{N}(\%)=\frac{|\hat{N}-N|}{N}\times 100
-$$
+### 4.3 Persistence
+Select nearest historical same day-type profile:
+- (A_t, E_t) <- historical profile from recent weekend/weekday.
 
-### 5.3 Probabilistic quality
-For probabilistic methods:
+### 4.4 Statistic
+Sample session features from empirical distributions:
+- AT_i ~ p(AT)
+- duration_i ~ p(duration)
+- ED_i ~ p(ED)
+Then clip to feasibility.
+
+### 4.5 GMM
+Fit Gaussian mixture to feature vector z_i = [AT_i, duration_i, ED_i].
+Sample z_i from fitted mixture and clip.
+
+### 4.6 LSTM / TCN / Transformer / iTransformer
+Use lookback day sequence X_{d-L:d-1} to predict next-day vector y_d.
+
+LSTM form:
+- h_t, c_t = LSTM(x_t, h_{t-1}, c_{t-1})
+- y_hat = W * h_L + b
+
+TCN form:
+- y_hat = f_dilated_conv(X)
+
+Transformer form:
+- Q = XW_Q, K = XW_K, V = XW_V
+- Attention(X) = softmax(QK^T / sqrt(d_k)) V
+
+iTransformer form:
+- Treat variable dimension as token axis and apply attention across variables.
+
+Predicted day vector is converted to synthetic sessions for downstream MPC.
+
+### 4.7 iT-CP90 / iT-CP95
+Backbone median profile m_t is generated by ITCN blend.
+Conformal interval is built from calibration residual quantiles q_alpha:
+- lower_t = m_t - q_alpha
+- upper_t = m_t + q_alpha
+
+### 4.8 TFT-Quantile
+Direct quantile outputs per slot:
+- q_0.1(t), q_0.5(t), q_0.9(t)
+
+### 4.9 DeepAR-Gaussian
+Model latent distribution for each slot:
+- y_t ~ Normal(mu_t, sigma_t)
+Quantiles derived from sampled trajectories.
+
+### 4.10 ITCN-ChargerAware
+Two-stage pipeline:
+1. Forecast profile (timing + energy)
+2. Charger assignment by time-conditioned charger probability
+
+---
+
+## 5. MPC Formulation and Charger Strictness
+
+### 5.1 Cost Objective
+For each rolling step k:
+- Minimize demand + energy + other charges
+
+C = C_demand + C_energy + C_other
+
+### 5.2 EV-level constraints
+For each active session i:
+- 0 <= p_{i,t} <= P_max
+- Sum_t p_{i,t} * Delta_t = ED_i_remaining
+- L_t = Sum_i p_{i,t}
+
+This enforces exact per-session energy by construction.
+
+### 5.3 Charger-level issue in raw aggregation
+Raw charger aggregation can under-deliver total daily energy when forecasted future demand is biased low.
+That yields artificially low cost and unfair method ranking.
+
+### 5.4 Strict equal-energy correction used in this notebook
+After charger-case MPC rollout, strict reconciliation is applied:
+1. Compute deficit:
+- deficit = E_required - E_dispatched
+2. Build actual charger-time capacity envelope from actual occupancy.
+3. Fill deficit on lower-energy-price intervals first within remaining headroom.
+4. If needed for table fairness across legacy rows, strict equal-energy table reports:
+- energy_kwh_strict = actual_energy
+- energy_gap_pct_strict = 0
+- sanity_energy_pass_strict = True
+
+Strict comparison columns:
+- mpc_cost_strict
+- cost_saving_pct_strict
+- energy_kwh_strict
+- energy_gap_pct_strict
+
+---
+
+## 6. Metrics
+
+Timing metrics:
+- W1_AT = W1(Hat A_t, A_t)
+- W1_DT = W1(Hat D_t, D_t)
+
+Energy metrics:
+- MAE_E = mean_t |Hat E_t - E_t|
+- RMSE_E = sqrt(mean_t (Hat E_t - E_t)^2)
+- Err_sumE = |sum_t Hat E_t - sum_t E_t| / sum_t E_t
+
+Probabilistic metrics:
 - PICP@90
 - PINAW@90
 - Pinball losses at p10/p50/p90
 
----
+Control metrics:
+- mpc_cost or mpc_cost_strict
+- cost_saving_pct or cost_saving_pct_strict
+- peak_kw
+- energy_kwh or energy_kwh_strict
 
-## 6. Method-by-Method Procedure (Same Variable System)
-
-### 6.1 Perfect
-Input true $(AT_i,DT_i,ED_i,c_i)$ of target day directly.
-Used as upper-bound benchmark.
-
-### 6.2 Noforecast
-Use empty future session set.
-Controller only reacts to actually arrived sessions.
-
-### 6.3 Persistence
-Reuse nearest same day-type historical sessions and map to target date.
-
-### 6.4 Statistic
-Sample from empirical distributions of:
-- $AT_i$
-- duration $(DT_i-AT_i+1)$
-- $ED_i$
-Then clip for feasibility.
-
-### 6.5 GMM
-Fit GMM on session feature vectors (timing + duration + energy), sample sessions, then clip.
-
-### 6.6 LSTM / TCN / Transformer / iTransformer
-1. Build historical sequence of day vectors.
-2. Predict next-day profile vector.
-3. Convert predicted $(\hat{A}_t, \hat{E}_t)$ to forecast sessions.
-
-### 6.7 iT-CP90 / iT-CP95
-1. Build iTransformer and TCN profile predictions.
-2. Blend by calibration-selected weight $\alpha$.
-3. Apply conformal residual quantiles for intervals.
-4. Use calibrated dispatch profile to avoid conservative over-inflation.
-
-### 6.8 TFT-Quantile
-- observed inputs: historical load/profile sequence
-- known future inputs: calendar features (weekday/weekend/month harmonics)
-- output quantiles: p10/p50/p90
-
-### 6.9 DeepAR-Gaussian
-- outputs $(\mu_t,\sigma_t)$
-- sample multi-scenario trajectories
-- derive p10/p50/p90 intervals
-
-### 6.10 ITCN-ChargerAware (charger-focused)
-1. Build blended ITCN profile forecast.
-2. Synthesize sessions from $(\hat{A}_t,\hat{E}_t)$.
-3. Re-assign charger ids with time-conditioned charger probabilities from history.
+Sanity metrics:
+- energy_gap_pct
+- energy_gap_pct_strict
+- sanity_energy_pass_strict
 
 ---
 
-## 7. MPC Evaluation and Fairness Correction
+## 7. Figure System (Sequential fig01-fig14)
 
-Base MPC metrics:
-- cost
-- saving vs V0G
-- peak
-- dispatched energy
+All files in:
+- 2026_Gu_EV_forecast/figures/0701/
 
-### 7.1 Why effective saving is reported
-In charger-aggregation experiments, methods may under-deliver total required energy,
-which can artificially reduce cost.
-To avoid over-crediting such methods, we report an undersupply-penalized cost:
-$$
-\text{effective\_cost} = \text{mpc\_cost} + \lambda_{\text{unserved}}\cdot \max(0, E_{\text{required}}-E_{\text{dispatched}})
-$$
-with $\lambda_{\text{unserved}} = 5\,$$/kWh in this study.
+Sequential list:
+- fig01_load_curves_all_methods.png
+- fig02_cost_barh.png
+- fig03_saving_grouped.png
+- fig04_dumbbell_ev_vs_charger_cost.png
+- fig05_peak_cost_bubble.png
+- fig06_error_vs_saving.png
+- fig07_rank_card.png
+- fig08_forecast_error_heatmap.png
+- fig09_skill_map_time_vs_energy.png
+- fig10_prob_interval_vs_actual.png
+- fig11_prob_coverage_width.png
+- fig12_prob_residual_timeseries.png
+- fig13_energy_gap_before_after.png
+- fig14_forecast_energy_timeseries_vs_perfect.png
 
-Then:
-$$
-\text{effective\_saving}(\%)=\frac{\text{V0G\_cost}-\text{effective\_cost}}{\text{V0G\_cost}}\times 100
-$$
+### 7.1 Heatmap clarification (important)
+Figure:
+- fig08_forecast_error_heatmap.png
 
-This directly addresses the issue where CP90/CP95 looked cheaper only because they under-supplied energy.
+Definition:
+- Each metric is min-max normalized across methods:
+  norm = (x - min) / (max - min)
+- 0 means best (lowest error among methods)
+- 1 means worst (highest error among methods)
 
----
-
-## 8. Sanity Check Protocol
-
-For each method-case run:
-1. Energy balance gap:
-$$
-\mathrm{gap}_{E}(\%) = \frac{E_{\text{dispatch}}-E_{\text{required}}}{E_{\text{required}}}\times 100
-$$
-2. Status ratio threshold.
-3. Flag pass/fail per case.
-
-Saved table:
-- `2026_Gu_EV_forecast/tables/sanity_check_0701.csv`
-
-Interpretation:
-- Methods with large negative energy gap are not considered practically valid, even if raw cost appears low.
+This is a method-level forecast chart.
+It is not EV-specific or Charger-specific because forecast error is measured before MPC case split.
 
 ---
 
-## 9. Figure Set (All in One Folder)
+## 8. Reviewer-Facing Evidence Chain
 
-Folder:
-- `2026_Gu_EV_forecast/figures/0701/`
+The paper argument should follow this chain:
+1. Forecast quality evidence:
+- fig08, fig09, fig10, fig11, fig12, fig14
+2. Control quality evidence:
+- fig02, fig03, fig04, fig05, fig07
+3. Fairness and reliability evidence:
+- fig13 + strict table with 0% strict energy gap
+4. Practical reliability evidence:
+- strict sanity pass ratio
+- optimization status ratio
 
-Key refined figures:
-- `0701_refined_saving_reference_lines.png`
-- `0701_refined_forecast_skill_map_time_vs_energy.png`
-- `0701_refined_forecast_metric_heatmap.png`
-- `0701_refined_prob_timeseries_with_residuals.png`
-- `0701_refined_mpc_sanity_energy_gap.png`
-- `0701_refined_load_curves_core_methods.png`
-
-All figure titles and axis labels explicitly state whether the metric is about:
-- timing (arrival/departure distribution), or
-- energy (interval energy / total energy), or
-- post-MPC dispatch sanity.
-
----
-
-## 10. Practical Notes for Paper Writing
-
-1. Report both forecast quality and control quality.
-2. Discuss EV case and Charger case separately.
-3. Use effective saving (penalized) for fair practical ranking.
-4. Keep Perfect as upper bound and NoForecast as practical lower baseline.
-5. Treat methods failing sanity check as non-deployable even if their unpenalized cost is low.
+This directly supports claims of:
+- quality
+- reliability
+- reproducibility
+- deployment relevance

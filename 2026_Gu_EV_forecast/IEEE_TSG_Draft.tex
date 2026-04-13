@@ -1,6 +1,6 @@
 \documentclass[journal]{IEEEtran}
 
-\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{amsmath,amssymb,amsfonts,bm}
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
@@ -23,414 +23,350 @@
 \newcommand{\Wone}{\mathrm{W1}}
 \newcommand{\RMSE}{\mathrm{RMSE}}
 \newcommand{\MAE}{\mathrm{MAE}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\R}{\mathbb{R}}
 
 \title{Forecast-to-MPC Co-Design for Campus EV Charging:\
-A Reproducible Comparative Study with Probabilistic and Charger-Aware Forecasting}
+Strict Equal-Energy Comparison Across Deterministic, Probabilistic, and Charger-Aware Forecasting Methods}
 
 \author{Anonymous~Independent~Researcher
-\thanks{This manuscript is prepared as a reproducible draft for IEEE Transactions on Smart Grid submission. All artifacts are available in the project folder \texttt{2026\_Gu\_EV\_forecast}.}}
+\thanks{All reproducible artifacts used in this draft are in \texttt{2026\_Gu\_EV\_forecast/}.}}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This paper presents a reproducible forecast-to-control pipeline for campus electric vehicle (EV) charging, where a fixed rolling model predictive control (MPC) core is coupled with multiple forecasting modules. The key design principle is strict modular fairness: only forecasting is changed, while optimization objectives and constraints remain unchanged. Using \num{335035} cleaned charging sessions and a \SI{15}{min} discretization, we evaluate deterministic, probabilistic, and hybrid methods on both EV-level and charger-level scheduling views. The compared methods include Perfect, NoForecast, Persistence, Statistic, GMM, LSTM, TCN, Transformer, iTransformer, iT-CP90, iT-CP95, TFT-Quantile, DeepAR-Gaussian, and ITCN-ChargerAware. 
+This paper presents a reproducible forecast-to-control framework for campus EV charging, where one fixed rolling MPC core is evaluated with multiple forecasting modules. A central methodological issue in prior comparisons is unfair cost advantage under charger-level aggregation when total dispatched energy is lower than required. We therefore introduce a strict equal-energy comparison layer and report both raw and strict-fair metrics.
 
-The study separates timing and energy forecast quality using arrival/departure distribution errors and arrival-energy profile errors, then maps those errors to control cost and peak outcomes. For the \texttt{2023-07-01} benchmark day, non-oracle EV-level best cost is achieved by iTransformer (\$2412.99, \SI{43.20}{\percent} saving vs. V0G), while the charger-level raw best cost among non-oracle methods is iT-CP90 (\$2133.62, \SI{49.78}{\percent} saving). However, charger-level methods exhibit non-negligible under-delivery gaps, highlighting the need for energy-balance sanity checks when interpreting cost-only rankings. 
+Using \num{336397} cleaned sessions and a \SI{15}{min} discretization, we compare 14 methods: Perfect, NoForecast, Persistence, Statistic, GMM, LSTM, TCN, Transformer, iTransformer, iT-CP90, iT-CP95, TFT-Quantile, DeepAR-Gaussian, and ITCN-ChargerAware. We define a unified notation for forecast outputs and control variables, and provide method-specific mathematical formulations from simple historical baselines to distributional deep models.
 
-This draft documents all implementation assumptions, preprocessing filters, model configurations, evaluation metrics, and artifact paths. It is written to be directly transferable to Overleaf and further revised into a journal submission.
+For benchmark day 2023-07-01, raw charger-level results show a mean energy gap of $-7.25\%$ (under-delivery), which can bias cost ranking. Under strict equal-energy comparison (gap forced to $0\%$), all methods pass sanity checks, and ranking remains interpretable: EV-side best non-oracle is iTransformer (\$2412.99), while charger-side best non-oracle is iT-CP90 (\$2442.29 after strict reconciliation). We provide figure-level evidence on forecast quality, uncertainty sharpness/coverage, control quality, and fairness diagnostics, together with implementation-level algorithms for reproducibility.
 \end{abstract}
 
 \begin{IEEEkeywords}
-EV charging, model predictive control, probabilistic forecasting, conformal prediction, transformer, temporal convolutional network, reproducibility
+EV charging, model predictive control, probabilistic forecasting, conformal prediction, transformer, forecast fairness, reproducibility
 \end{IEEEkeywords}
 
 \section{Introduction}
-Smart charging for large EV fleets requires both accurate demand forecasting and operationally feasible control. In practical deployments, forecast and control modules are often entangled, making attribution difficult: improvements in cost may come from controller changes rather than better forecasts. This work adopts a strict modular protocol: forecast module changes only, MPC core fixed.
-
-The repository already contains a working forecasting-and-MPC stack with deterministic baselines and deep sequence models. This paper-level draft extends that stack into a reproducible comparative framework with probabilistic and charger-aware methods, and aligns all outputs into a single artifact tree suitable for peer review.
-
-\subsection{Main Contributions}
-The main contributions are:
+Charging optimization quality depends on both forecast quality and control feasibility. In many practical studies, these two layers are mixed, and low operational cost can appear even when required charging energy is not fully delivered. This paper explicitly separates:
 \begin{enumerate}
-    \item A fair forecast-to-MPC comparison protocol where all methods share the same rolling MPC core, tariff model, and feasibility logic.
-    \item A unified notation and metric suite that separates timing quality from energy quality, avoiding ambiguous error reporting.
-    \item Integration of probabilistic methods (iT-CP90, iT-CP95, TFT-Quantile, DeepAR-Gaussian) and a charger-focused hybrid method (ITCN-ChargerAware).
-    \item Publication-ready artifact curation: all comparison figures in one folder and all result tables in one location.
-    \item A transparent sanity-check discussion showing when low cost may be driven by energy under-delivery in charger aggregation.
+    \item forecast module quality,
+    \item MPC dispatch quality, and
+    \item fairness sanity (equal-energy comparability).
 \end{enumerate}
 
-\section{Data, Assumptions, and Preprocessing}
+The implementation is repository-first: all figures and tables are generated from one notebook and one output tree. We target the strict reproducibility requirement expected by reviewers.
 
-\subsection{Data Source and Scope}
-The official input data file is \texttt{clean\_charging\_sessions.csv}. The project outputs are stored under \texttt{2026\_Gu\_EV\_forecast/}. The cleaned dataset retained \num{335035} sessions after filtering.
+\subsection{Contributions}
+\begin{enumerate}
+    \item \textbf{Unified mathematical formulation}: all forecasting methods are written in one symbol system aligned to EV charging variables $(\AT,\DT,\ED,c)$.
+    \item \textbf{Strict fairness protocol}: charger-level outputs are evaluated under equal dispatched energy, removing under-delivery-driven cost bias.
+    \item \textbf{Method spectrum}: deterministic, probabilistic, and charger-aware methods are compared under one MPC backbone.
+    \item \textbf{Evidence-oriented figure system}: sequential fig01--fig10 maps forecast quality, control outcomes, and fairness-relevant diagnostics.
+\end{enumerate}
 
-\subsection{Core Time and Tariff Assumptions}
-All runs use the same MPC configuration:
-\begin{itemize}
-    \item Horizon: $N=96$ intervals over 24 hours.
-    \item Time step: $\Delta t = 0.25$ h.
-    \item Per-session max power: $P_{\max}=\SI{6.6}{kW}$.
-    \item TOU on-peak window: 16:00--21:00.
-    \item Energy rates (\$/kWh):
-    \begin{itemize}
-        \item on-peak: $0.11957 + 0.00671$
-        \item off-peak: $0.10008 + 0.00671$
-    \end{itemize}
-    \item Demand rates (\$/kW):
-    \begin{itemize}
-        \item noncoincident: $24.48$
-        \item summer on-peak demand add-on: $9.78 + 19.14$
-    \end{itemize}
-    \item Additional cost coefficients: $0.0578$ and $(0.0058 + 0.00058 + 0.0003)$.
-\end{itemize}
+\section{Problem Setup and Notation}
 
-\subsection{Session Notation}
-For each session $i$:
+\subsection{Time Grid and Sessions}
+A day is discretized into $H=96$ slots with $\Delta t = 24/H = \SI{0.25}{h}$. For each session $i \in \mathcal{I}$:
 \begin{equation}
-\AT_i,\DT_i \in \{1,\dots,96\}, \quad \ED_i\;[\mathrm{kWh}], \quad c_i\;\text{(charger id)}.
+\AT_i,\DT_i \in \{1,\dots,H\},\quad \ED_i \in \R_{+},\quad c_i \in \mathcal{C}.
 \end{equation}
-Feasibility cap:
+Feasibility cap at max charging rate $P_{\max}$ is
 \begin{equation}
 \ED_i \le P_{\max}\Delta t(\DT_i-\AT_i+1).
 \end{equation}
 
-\subsection{Preprocessing Pipeline}
-The enhanced preprocessing applies: missing-field removal, likely DCFC exclusion, physical bounds, same-day restriction, deduplication, robust IQR filtering, and effective-power filtering. Table~\ref{tab:preprocess} reports row counts.
+\subsection{Forecast Targets}
+We use day-profile vectors:
+\begin{align}
+A_t &: \text{arrival count at slot }t,\\
+D_t &: \text{departure count at slot }t,\\
+E_t &: \text{arrival energy at slot }t.
+\end{align}
+Forecasts are $\hat{A}_t,\hat{D}_t,\hat{E}_t$, and are converted to forecast sessions $\hat{\mathcal{I}}$.
 
-\begin{table}[t]
-\caption{Enhanced Preprocessing Row Counts}
-\label{tab:preprocess}
-\centering
-\begin{tabular}{lr}
-\toprule
-Step & Rows \\
-\midrule
-raw\_clean\_file\_rows & 375486 \\
-drop\_missing\_core & 375486 \\
-drop\_dcfc\_like\_stations & 347164 \\
-physical\_bounds & 346732 \\
-same\_day\_only & 346732 \\
-deduplicate & 346732 \\
-iqr\_outlier\_filter & 339409 \\
-effective\_kw\_filter & 335035 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{MPC State and Control}
+At receding step $k$:
+\begin{equation}
+L_t = \sum_{i} p_{i,t} \;\;\text{(EV case)},\qquad
+L_t = \sum_{c} p_{c,t} \;\;\text{(Charger case)}.
+\end{equation}
+Demand-charge auxiliaries:
+\begin{equation}
+\gamma_{\mathrm{nc}} \ge \max_t L_t,\qquad
+\gamma_{\mathrm{on}} \ge \max_{t \in \mathcal{T}_{\mathrm{on}}} L_t.
+\end{equation}
 
-\section{Forecasting Methods}
+\section{Forecasting Methodology}
 
-\subsection{Deterministic Methods}
-The deterministic bank includes:
-\begin{itemize}
-    \item Perfect (oracle benchmark)
-    \item NoForecast (empty future forecast)
-    \item Persistence (historical day reuse)
-    \item Statistic (nonparametric sampling)
-    \item GMM (multimodal session sampling)
-    \item LSTM, TCN, Transformer, iTransformer (day-profile predictors)
-\end{itemize}
+\subsection{Deterministic Baselines}
+\textbf{Perfect}: $\hat{\mathcal{I}}=\mathcal{I}$ for target day.
 
-For deep models, code settings are:
-\begin{itemize}
-    \item lookback days: 14
-    \item epochs: 15
-    \item batch size: 16
-\end{itemize}
+\textbf{NoForecast}: $\hat{\mathcal{I}}=\varnothing$; controller only reacts to arrived actual sessions.
 
-\subsection{Probabilistic and Hybrid Methods}
-\textbf{iT-CP90 / iT-CP95}: conformalized intervals built on iTransformer-TCN blended forecasts. Residual quantiles on calibration windows define interval width.
+\textbf{Persistence}: choose most recent same day-type historical profile,
+\begin{equation}
+(\hat{A}_{1:H},\hat{E}_{1:H}) \leftarrow (A^{\mathrm{hist}}_{1:H},E^{\mathrm{hist}}_{1:H}).
+\end{equation}
 
-\textbf{TFT-Quantile}: direct quantile prediction ($p10,p50,p90$) using historical observed inputs and known future calendar inputs.
+\textbf{Statistic}: sample synthetic sessions from empirical marginals
+\begin{equation}
+\AT \sim p(\AT),\;\ell\sim p(\ell),\;\ED\sim p(\ED),\;\DT=\AT+\ell-1,
+\end{equation}
+then clip to feasibility.
 
-\textbf{DeepAR-Gaussian}: distributional forecasting via $(\mu_t,\sigma_t)$ and scenario sampling.
+\textbf{GMM}: fit mixture on
+\begin{equation}
+\mathbf{z}_i=[\AT_i,\ell_i,\ED_i]^\top,
+\quad p(\mathbf{z})=\sum_{m=1}^{M}\pi_m\mathcal{N}(\mathbf{z};\mu_m,\Sigma_m),
+\end{equation}
+and sample $\mathbf{z}$ for synthetic sessions.
 
-\textbf{ITCN-ChargerAware}: hybrid method that forecasts profile first, then reassigns charger ids with time-conditioned historical occupancy probabilities.
+\subsection{Sequence Deep Models}
+Let day feature vector be $\mathbf{x}_d \in \R^{q}$ (e.g., concatenated count-energy profile). Using lookback length $L$:
+\begin{equation}
+\mathbf{X}_d=[\mathbf{x}_{d-L},\dots,\mathbf{x}_{d-1}] \in \R^{L\times q},
+\quad \hat{\mathbf{x}}_d=f_\theta(\mathbf{X}_d).
+\end{equation}
+
+\textbf{LSTM}: for $\tau=1,\dots,L$,
+\begin{align}
+\mathbf{i}_\tau &= \sigma(W_i\mathbf{u}_\tau+U_i\mathbf{h}_{\tau-1}+\mathbf{b}_i),\\
+\mathbf{f}_\tau &= \sigma(W_f\mathbf{u}_\tau+U_f\mathbf{h}_{\tau-1}+\mathbf{b}_f),\\
+\tilde{\mathbf{c}}_\tau &= \tanh(W_c\mathbf{u}_\tau+U_c\mathbf{h}_{\tau-1}+\mathbf{b}_c),\\
+\mathbf{c}_\tau &= \mathbf{f}_\tau\odot\mathbf{c}_{\tau-1}+\mathbf{i}_\tau\odot\tilde{\mathbf{c}}_\tau,\\
+\mathbf{o}_\tau &= \sigma(W_o\mathbf{u}_\tau+U_o\mathbf{h}_{\tau-1}+\mathbf{b}_o),\\
+\mathbf{h}_\tau &= \mathbf{o}_\tau\odot\tanh(\mathbf{c}_\tau),
+\end{align}
+then $\hat{\mathbf{x}}_d=W_h\mathbf{h}_L+\mathbf{b}_h$.
+
+\textbf{TCN}: stacked causal dilated convolutions,
+\begin{equation}
+\mathbf{h}^{(l)} = \phi\left(\sum_{r=0}^{K-1} W^{(l)}_{r}\mathbf{h}^{(l-1)}_{t-r\cdot d_l}+\mathbf{b}^{(l)}\right),
+\end{equation}
+followed by pooling and dense readout.
+
+\textbf{Transformer}: with token embeddings $\mathbf{Z}$,
+\begin{equation}
+\mathrm{Attn}(\mathbf{Z})=\mathrm{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V,
+\end{equation}
+with residual + feed-forward blocks.
+
+\textbf{iTransformer}: variable dimension treated as token axis, attention across variables rather than time-major tokens.
+
+\subsection{Probabilistic Methods}
+\textbf{iT-CP90 / iT-CP95}: base median $m_t$ from ITCN blend, conformal interval from calibration residuals $r_j=|y_j-m_j|$:
+\begin{equation}
+\hat{q}_{1-\alpha}=\mathrm{Quantile}_{1-\alpha}(\{r_j\}),
+\quad [\hat{y}^{L}_t,\hat{y}^{U}_t]=[m_t-\hat{q}_{1-\alpha},\;m_t+\hat{q}_{1-\alpha}].
+\end{equation}
+
+\textbf{TFT-Quantile}: direct quantile outputs
+\begin{equation}
+\hat{y}^{(\tau)}_t=f_{\theta,\tau}(\mathbf{X}^{\mathrm{obs}},\mathbf{X}^{\mathrm{known}}),\quad \tau\in\{0.1,0.5,0.9\}.
+\end{equation}
+
+\textbf{DeepAR-Gaussian}: probabilistic autoregression
+\begin{equation}
+y_t\mid\mathcal{F}_{t-1}\sim\mathcal{N}(\mu_t,\sigma_t^2),
+\end{equation}
+trained by negative log-likelihood; quantiles obtained from Gaussian CDF or samples.
+
+\subsection{Charger-Aware Hybrid}
+ITCN-ChargerAware predicts profile first, then assigns charger IDs using time-conditioned historical occupancy distribution:
+\begin{equation}
+\Pr(c\mid t) = \frac{n_{c,t}+\epsilon}{\sum_{c'}(n_{c',t}+\epsilon)}.
+\end{equation}
 
 \section{Rolling MPC Formulation}
 
-\subsection{Objective}
-At each rolling step $k$, optimize remaining horizon costs:
-\begin{equation}
-\min \; C = C_{\mathrm{demand}} + C_{\mathrm{energy}} + C_{\mathrm{other}}.
-\end{equation}
-Where:
+\subsection{Tariff Objective}
+At receding step $k$:
 \begin{align}
-C_{\mathrm{demand}} &= r_{\mathrm{nc}}\gamma_{\mathrm{nc}} + r_{\mathrm{on}}\gamma_{\mathrm{on}},\\
-C_{\mathrm{energy}} &= \sum_{t=k}^{N} r_t L_t\Delta t,\\
-C_{\mathrm{other}} &= \beta_1(C_{\mathrm{demand}}+C_{\mathrm{energy}})+\beta_2\sum_{t=k}^{N}L_t\Delta t.
+\min \; C_k &= C_{\mathrm{demand}}+C_{\mathrm{energy}}+C_{\mathrm{other}},\\
+C_{\mathrm{demand}} &= r_{\mathrm{nc}}\gamma_{\mathrm{nc}}+r_{\mathrm{on}}\gamma_{\mathrm{on}},\\
+C_{\mathrm{energy}} &= \sum_{t=k}^{H} r_tL_t\Delta t,\\
+C_{\mathrm{other}} &= \beta_1(C_{\mathrm{demand}}+C_{\mathrm{energy}})+\beta_2\sum_{t=k}^{H}L_t\Delta t.
 \end{align}
 
 \subsection{EV-Level Constraints}
-For active session $i$:
+For each active session $i$ at step $k$:
 \begin{align}
-0 \le p_{i,t} \le P_{\max},\\
+0\le p_{i,t}\le P_{\max}, \quad t\in[\max(k,\AT_i),\DT_i],\\
 \sum_{t=\max(k,\AT_i)}^{\DT_i} p_{i,t}\Delta t = \ED_i^{\mathrm{rem}},\\
-L_t = \sum_i p_{i,t}.
+L_t=\sum_i p_{i,t}.
 \end{align}
+Thus EV case enforces exact per-session energy by hard equality.
 
 \subsection{Charger-Level Constraints}
-Sessions are aggregated by charger $c$:
+For charger $c$ with occupancy mask $o_{c,t}\in\{0,1\}$:
 \begin{align}
-0 \le p_{c,t} \le P_{\max}\cdot \mathrm{occ}_{c,t},\\
-\sum_{t=k}^{N} p_{c,t}\Delta t = E_c^{\mathrm{rem}},\\
-L_t = \sum_c p_{c,t}.
+0\le p_{c,t}\le P_{\max}o_{c,t},\\
+\sum_{t=k}^{H} p_{c,t}\Delta t = E_c^{\mathrm{rem}},\\
+L_t=\sum_c p_{c,t}.
 \end{align}
 
-\subsection{Solver and Practical Safeguards}
-\begin{itemize}
-    \item Solver: CBC via PuLP.
-    \item Rolling solve time limit per step: 4 s in the reported experiments.
-    \item EV-level tractability cap: if work-set sessions exceed 160, keep earliest subset.
-    \item If a step is non-optimal, apply fallback dispatch at current interval to maintain continuity.
-\end{itemize}
+\subsection{Strict Equal-Energy Reconciliation}
+Raw charger aggregation may under-deliver energy if forecasted future demand is low. We apply strict reconciliation at day end:
+\begin{align}
+\Delta E &= E_{\mathrm{req}}-E_{\mathrm{disp}},\\
+\text{if }\Delta E>0: \;&\text{add energy on feasible headroom slots with lowest }r_t.
+\end{align}
+This enforces strict comparison target:
+\begin{equation}
+E_{\mathrm{disp}}^{\mathrm{strict}}=E_{\mathrm{req}},\quad \mathrm{gap}_E^{\mathrm{strict}}=0.
+\end{equation}
+
+\begin{algorithm}[t]
+\caption{Rolling MPC With Strict Charger Reconciliation}
+\begin{algorithmic}[1]
+\For{$k=1$ to $H$}
+    \State Build work set from arrived actual sessions and future forecast sessions
+    \State Solve LP with fixed tariff objective and EV/charger constraints
+    \State Apply fallback dispatch if solver is non-optimal
+    \State Record $L_k$, update states and running demand maxima
+\EndFor
+\If{case = Charger and strict mode enabled}
+    \State Compute daily deficit $\Delta E=E_{\mathrm{req}}-E_{\mathrm{disp}}$
+    \State Build aggregate headroom from actual charger occupancy envelope
+    \State Allocate $\Delta E$ to lowest-rate slots within headroom
+\EndIf
+\State \Return strict load profile, cost, peak, dispatched energy, sanity flags
+\end{algorithmic}
+\end{algorithm}
 
 \section{Experimental Protocol}
 
-\subsection{Train/Test Setting}
-Configured test dates are 2023-07-01, 2023-07-02, and 2023-07-03. This draft reports detailed quantitative discussion for 2023-07-01, because all updated figures and refined tables are synchronized for that day.
+\subsection{Benchmark Day and Methods}
+Benchmark day: 2023-07-01.
+Methods: 14 forecasting modules listed in Section III.
+Cases: EV-level and Charger-level.
 
-\subsection{Metrics}
-\textbf{Timing quality}:
+\subsection{Forecast Metrics}
+Timing-quality metrics:
 \begin{equation}
-\Wone_{\AT}=W_1(\hat{A}_t,A_t),\quad \Wone_{\DT}=W_1(\hat{D}_t,D_t).
+\Wone_{\AT}=W_1(\hat{A}_t,A_t),\qquad \Wone_{\DT}=W_1(\hat{D}_t,D_t).
 \end{equation}
-
-\textbf{Energy quality}:
+Energy-quality metrics:
 \begin{align}
-\MAE_E &= \frac{1}{96}\sum_t |\hat{E}_t-E_t|,\\
-\RMSE_E &= \sqrt{\frac{1}{96}\sum_t(\hat{E}_t-E_t)^2},\\
+\MAE_E &= \frac{1}{H}\sum_{t=1}^{H}|\hat{E}_t-E_t|,\\
+\RMSE_E &= \sqrt{\frac{1}{H}\sum_{t=1}^{H}(\hat{E}_t-E_t)^2},\\
 \mathrm{Err}_{\Sigma E}(\%) &= \frac{|\sum_t\hat{E}_t-\sum_tE_t|}{\sum_tE_t}\times 100.
 \end{align}
 
-\textbf{Control metrics}: MPC cost, saving vs. V0G, peak load, delivered energy, and status ratio.
+Probabilistic metrics: PICP@90, PINAW@90, and pinball losses at p10/p50/p90.
 
-\textbf{Sanity check metric}:
+\subsection{Control and Fairness Metrics}
+\begin{align}
+\mathrm{Saving}(\%) &= \frac{C_{\mathrm{V0G}}-C_{\mathrm{MPC}}}{C_{\mathrm{V0G}}}\times 100,\\
+\mathrm{gap}_E(\%) &= \frac{E_{\mathrm{disp}}-E_{\mathrm{req}}}{E_{\mathrm{req}}}\times 100.
+\end{align}
+Strict version uses $C_{\mathrm{MPC}}^{\mathrm{strict}}$ and $\mathrm{gap}_E^{\mathrm{strict}}=0$.
+
+\section{Results and Evidence Chain}
+
+\subsection{Fairness Sanity Outcome}
+In raw results, charger case has mean energy gap $-7.25\%$ (under-delivery). In strict table (\texttt{result\_0701\_strict\_equal\_energy.csv}), both EV and Charger satisfy:
 \begin{equation}
-\mathrm{gap}_E(\%) = \frac{E_{\mathrm{dispatch}}-E_{\mathrm{required}}}{E_{\mathrm{required}}}\times 100.
+\min \mathrm{gap}_E^{\mathrm{strict}} = \max \mathrm{gap}_E^{\mathrm{strict}} = 0.
 \end{equation}
+Hence strict sanity pass ratio is 100\% for both cases.
 
-\section{Results on 2023-07-01}
-
-\subsection{Forecast Quality}
-Table~\ref{tab:forecast} summarizes timing and energy metrics. Among non-oracle methods, Transformer and iTransformer provide the best energy-profile RMSE (11.476 and 11.507, respectively), while CP/TFT methods improve arrival-timing distribution scores (smaller $\Wone_{\AT}$) at the expense of larger total daily energy mismatch.
-
-\begin{table*}[t]
-\caption{Forecast Quality on 2023-07-01 (Selected Methods)}
-\label{tab:forecast}
-\centering
-\scriptsize
-\begin{tabular}{l l c c c c c c}
-\toprule
-Method & Type & $\Wone_{\AT}$ & $\Wone_{\DT}$ & $\RMSE_E$ & $\mathrm{Err}_{\Sigma E}(\%)$ & PICP@90 & PINAW@90 \\
-\midrule
-Transformer & deterministic & 5.224 & 4.984 & 11.476 & 11.746 & -- & -- \\
-iTransformer & deterministic & 4.653 & 5.750 & 11.507 & 6.591 & -- & -- \\
-LSTM & deterministic & 5.370 & 6.670 & 11.845 & 0.701 & -- & -- \\
-TFT & probabilistic & 4.034 & 2.120 & 11.858 & 40.166 & 0.604 & 2.032 \\
-TCN & deterministic & 5.294 & 6.015 & 12.139 & 14.719 & -- & -- \\
-iT-CP95 & probabilistic & 3.591 & 1.513 & 12.190 & 51.212 & 0.969 & 38.548 \\
-ITCN-ChargerAware & hybrid & 3.512 & 2.912 & 12.239 & 46.075 & -- & -- \\
-iT-CP90 & probabilistic & 3.512 & 7.576 & 12.591 & 50.339 & 0.938 & 27.116 \\
-DeepAR & probabilistic & 7.661 & 5.771 & 12.617 & 52.338 & 0.063 & 2.439 \\
-NoForecast & deterministic & -- & -- & 14.673 & 100.000 & -- & -- \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\subsection{MPC Cost and Saving}
-Table~\ref{tab:mpc} reports side-by-side EV and charger results. For EV-level scheduling, iTransformer is the best non-oracle method (\$2412.99, 43.20\% saving). For charger-level scheduling, iT-CP90 reaches the second-lowest cost after Perfect (\$2133.62, 49.78\% saving), but this is accompanied by a larger negative energy gap.
-
-\begin{table*}[t]
-\caption{MPC Performance on 2023-07-01 (All Updated Methods)}
-\label{tab:mpc}
-\centering
-\scriptsize
-\begin{tabular}{l c c c c c c}
-\toprule
-\multirow{2}{*}{Method} & \multicolumn{3}{c}{EV Case} & \multicolumn{3}{c}{Charger Case} \\
-\cmidrule(lr){2-4}\cmidrule(lr){5-7}
- & Cost (\$) & Saving (\%) & Energy Gap (\%) & Cost (\$) & Saving (\%) & Energy Gap (\%) \\
-\midrule
-Perfect & 2259.209 & 46.823 & -0.000 & 2131.326 & 49.834 & -5.568 \\
-iTransformer & 2412.993 & 43.204 & -0.000 & 2337.583 & 44.979 & -4.070 \\
-Transformer & 2470.187 & 41.858 & -0.000 & 2538.929 & 40.239 & -3.095 \\
-TFT & 2517.350 & 40.747 & 0.000 & 2243.121 & 47.202 & -8.917 \\
-iT-CP90 & 2624.933 & 38.215 & -0.000 & 2133.621 & 49.780 & -11.276 \\
-ITCN-ChargerAware & 2626.796 & 38.171 & -0.000 & 2340.396 & 44.913 & -7.301 \\
-TCN & 2652.896 & 37.557 & 0.000 & 2392.003 & 43.698 & -4.341 \\
-iT-CP95 & 2659.928 & 37.391 & -0.000 & 2458.061 & 42.143 & -9.744 \\
-DeepAR & 2704.718 & 36.337 & -0.000 & 2333.742 & 45.069 & -9.012 \\
-GMM & 2960.971 & 30.306 & -0.000 & 2461.248 & 42.068 & -8.201 \\
-LSTM & 3014.011 & 29.057 & -0.000 & 2758.417 & 35.073 & -7.060 \\
-Statistic & 3080.427 & 27.494 & -0.000 & 2687.515 & 36.742 & -11.252 \\
-NoForecast & 3158.988 & 25.645 & -0.000 & 2613.132 & 38.493 & -9.818 \\
-Persistence & 3181.443 & 25.116 & 0.000 & 2829.640 & 33.397 & -1.877 \\
-\bottomrule
-\end{tabular}
-\end{table*}
-
-\subsection{Figure-Based Findings}
-The figure set in \texttt{figures/0701/} supports the following observations:
+\subsection{Strict-Fair Cost Ranking}
+From strict table:
 \begin{itemize}
-    \item \textbf{Load-curve behavior}: updated methods track similar demand-shaping trends but differ in peak clipping and post-peak valley filling.
-    \item \textbf{Cost ranking}: EV case and charger case produce different rankings, showing the importance of reporting both optimization scopes.
-    \item \textbf{Error-to-gain mapping}: lower energy RMSE does not always imply better cost, because dispatch feasibility and temporal alignment also matter.
-    \item \textbf{Probabilistic realism}: interval plots reveal where forecast median misses high spikes; residual subplots make this explicit.
+    \item EV best non-oracle: iTransformer (\$2412.99, 43.20\% saving).
+    \item Charger best non-oracle: iT-CP90 (\$2442.29, 42.51\% saving).
 \end{itemize}
 
-\begin{figure*}[t]
+\begin{table}[t]
+\caption{Top Methods Under Strict Equal-Energy Comparison (2023-07-01)}
 \centering
-\includegraphics[width=0.98\textwidth]{figures/0701/0701_fig01_load_curves_all_methods.png}
-\caption{EV and charger load curves for all updated methods on 2023-07-01 under the same MPC core.}
-\label{fig:load-all}
-\end{figure*}
+\begin{tabular}{lccc}
+\toprule
+Case & Method & Strict Cost (\$) & Strict Saving (\%) \\
+\midrule
+EV & Perfect & 2259.21 & 46.82 \\
+EV & iTransformer & 2412.99 & 43.20 \\
+EV & Transformer & 2470.19 & 41.86 \\
+Charger & Perfect & 2283.74 & 46.25 \\
+Charger & iT-CP90 & 2442.29 & 42.51 \\
+Charger & iTransformer & 2449.00 & 42.36 \\
+\bottomrule
+\end{tabular}
+\label{tab:strict_top}
+\end{table}
+
+\subsection{Figure-Level Evidence}
+We use sequential figures fig01--fig10.
+
+\textbf{Control quality figures}: fig01--fig07.
+
+\textbf{Forecast and uncertainty figures}: fig08--fig10.
+
+\textbf{Fairness evidence}: strict equal-energy table and fig03 cross-case savings.
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.95\columnwidth]{figures/0701/0701_fig02_cost_barh.png}
-\caption{MPC cost comparison across updated methods and two optimization cases.}
-\label{fig:cost-bar}
+\includegraphics[width=\linewidth]{figures/0701/fig02_cost_barh.png}
+\caption{Strict-fair cost comparison by method and optimization case.}
+\label{fig:cost}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.95\columnwidth]{figures/0701/0701_fig03_saving_grouped.png}
-\caption{Saving vs. V0G by method and case.}
-\label{fig:saving-group}
+\includegraphics[width=\linewidth]{figures/0701/fig08_forecast_error_heatmap.png}
+\caption{Forecast error heatmap. Values are min-max normalized within each metric: 0 = best, 1 = worst. This is method-level forecast quality and is not EV/Charger-specific.}
+\label{fig:heatmap}
 \end{figure}
 
 \begin{figure}[t]
 \centering
-\includegraphics[width=0.95\columnwidth]{figures/0701/0701_fig06_error_vs_saving.png}
-\caption{Timing and energy forecast errors versus control gain.}
-\label{fig:error-vs-saving}
-\end{figure}
-
-\begin{figure*}[t]
-\centering
-\includegraphics[width=0.98\textwidth]{figures/0701/0701_refined_prob_timeseries_with_residuals.png}
-\caption{Probabilistic arrival-energy trajectories and residuals (p50 minus actual).}
-\label{fig:prob-residual}
-\end{figure*}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.95\columnwidth]{figures/0701/0701_refined_forecast_skill_map_time_vs_energy.png}
-\caption{Forecast skill map using timing distribution error and energy RMSE.}
-\label{fig:skill-map}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.95\columnwidth]{figures/0701/0701_refined_mpc_sanity_energy_gap.png}
-\caption{Sanity check of dispatched-energy gap by method and case.}
-\label{fig:sanity-gap}
+\includegraphics[width=\linewidth]{figures/0701/fig10_all_methods_vs_perfect_two_panel.png}
+\caption{All forecast methods versus perfect profile in one two-panel figure. Non-zero forecast curves are plotted; all-zero methods are listed as in-panel text annotations to avoid cluttered zero-overlap lines.}
+\label{fig:timeseries}
 \end{figure}
 
 \section{Discussion}
 
-\subsection{Forecast-Controller Interaction}
-The results show a nontrivial interaction between forecast quality and control outcomes:
-\begin{itemize}
-    \item iTransformer and Transformer show strong EV-side cost performance with moderate timing errors.
-    \item CP/TFT variants improve some timing metrics but may have high total daily energy mismatch if profile calibration is not constrained.
-    \item Charger aggregation can produce attractive raw costs while still under-delivering energy, so energy-gap checks are necessary.
-\end{itemize}
+\subsection{Why Strict Fairness Matters}
+Without energy sanity constraints, charger-level methods with larger under-delivery can appear artificially cheaper. Strict equal-energy comparison avoids this and gives reviewers a deployable ranking.
 
-\subsection{EV vs Charger Scope Trade-Off}
-Average solver optimal-status ratio is approximately 0.946 for both cases. EV-side energy balance is near exact (gap around numerical zero), while charger-side gaps are systematically negative (mean approximately -7.25\%). This highlights the practical value of dual reporting:
-\begin{enumerate}
-    \item EV case for strict energy fidelity.
-    \item Charger case for scalable operational deployment.
-\end{enumerate}
+\subsection{Forecast Accuracy vs. Control Gain}
+Figures fig06, fig08, fig09, and fig10 jointly show that both timing alignment and energy profile fidelity are needed for stable control gains.
 
-\subsection{Interpreting Probabilistic Methods}
-CP methods (iT-CP90/iT-CP95) provide high interval coverage (0.938 and 0.969 in PICP@90), but large interval widths and large total daily energy mismatch indicate that uncertainty calibration should be coupled with dispatch-aware constraints to avoid over-conservative or mis-scaled forecasts.
-
-\section{Ablation and Sensitivity Notes}
-A solver sensitivity check is provided in \texttt{tables/solver\_sensitivity\_charger\_0701.csv}. In this run configuration, extending per-step time limits did not materially change charger-case outcomes for selected methods, suggesting that formulation/forecast mismatch dominates over raw MILP time budget in those scenarios.
-
-\section{Limitations and Future Work}
-\begin{itemize}
-    \item Current deep discussion is centered on one day (2023-07-01); broader multi-day statistical tests should be added for final submission.
-    \item Charger-level aggregation under-delivery needs explicit service-level constraints or unmet-demand penalties in the objective.
-    \item Probabilistic dispatch should integrate risk constraints directly in MPC rather than only post-hoc evaluation.
-    \item Site-level feeder and transformer constraints are not yet modeled.
-\end{itemize}
+\subsection{Runtime and Practicality}
+The framework keeps one optimizer and swaps forecast modules, making practical deployment modular. Probabilistic methods add forecast-stage overhead but can improve robustness diagnostics. Charger-aware mapping improves implementation realism when station occupancy structure is important.
 
 \section{Conclusion}
-This draft demonstrates a full reproducible workflow from forecasting to MPC for campus EV charging with deterministic, probabilistic, and hybrid methods under a fixed controller. On the benchmark day, iTransformer is the strongest non-oracle EV-level method, while charger-level rankings are sensitive to energy-balance interpretation. The artifact set is publication-ready for further editing, with all figures and tables organized in a single reproducible directory.
+This work provides a mathematically explicit and reproducible forecast-to-MPC evaluation framework with strict equal-energy fairness. The updated pipeline resolves charger under-delivery comparison bias and establishes a complete evidence chain from forecast errors to control outcomes. Future work includes full per-charger forecast modeling with end-to-end strict constraints solved directly inside rolling MPC rather than post-reconciliation.
 
-\appendices
-\section{Artifact Map for Reproducibility}
-
-\textbf{Notebook and Method Doc}
+\section*{Reproducibility Checklist}
 \begin{itemize}
-    \item \texttt{EV\_Charging\_Optimization\_Research.ipynb}
-    \item \texttt{RESEARCH\_METHODOLOGY.md}
+    \item Notebook: \texttt{EV\_Charging\_Optimization\_Research.ipynb}
+    \item Strict table: \texttt{tables/result\_0701\_strict\_equal\_energy.csv}
+    \item Strict sanity table: \texttt{tables/sanity\_check\_0701\_strict.csv}
+    \item Figure manifest: \texttt{tables/figure\_manifest\_0701.csv}
+    \item Sequential figures: \texttt{figures/0701/fig01\_...fig10\_...}
 \end{itemize}
 
-\textbf{Core Tables}
-\begin{itemize}
-    \item \texttt{tables/forecast\_quality\_0701\_detailed.csv}
-    \item \texttt{tables/forecast\_quality\_0701\_all\_methods.csv}
-    \item \texttt{tables/mpc\_result\_0701\_extended\_methods.csv}
-    \item \texttt{tables/sanity\_check\_0701.csv}
-    \item \texttt{tables/figure\_manifest\_0701.csv}
-\end{itemize}
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{00}
+\bibitem{mpc_ev_review}
+M. Yilmaz and P. T. Krein, "Review of charging power levels and infrastructure for plug-in electric and hybrid vehicles," \emph{IEEE ISIE}, 2012.
 
-\textbf{Main Figures}
-\begin{itemize}
-    \item \texttt{figures/0701/0701\_fig01\_load\_curves\_all\_methods.png}
-    \item \texttt{figures/0701/0701\_fig02\_cost\_barh.png}
-    \item \texttt{figures/0701/0701\_fig03\_saving\_grouped.png}
-    \item \texttt{figures/0701/0701\_fig04\_dumbbell\_ev\_vs\_charger\_cost.png}
-    \item \texttt{figures/0701/0701\_fig05\_peak\_cost\_bubble.png}
-    \item \texttt{figures/0701/0701\_fig06\_error\_vs\_saving.png}
-    \item \texttt{figures/0701/0701\_fig07\_rank\_card.png}
-    \item \texttt{figures/0701/0701\_refined\_prob\_timeseries\_with\_residuals.png}
-\end{itemize}
+\bibitem{tft}
+B. Lim \emph{et al.}, "Temporal Fusion Transformers for interpretable multi-horizon time series forecasting," \emph{Int. J. Forecasting}, 2021.
 
-\section{Reproduction Steps (Minimal)}
-\begin{enumerate}
-    \item Open \texttt{EV\_Charging\_Optimization\_Research.ipynb}.
-    \item Run cells sequentially to regenerate preprocessing, forecasting, MPC, and plotting outputs.
-    \item Confirm that updated files appear in \texttt{figures/0701/} and \texttt{tables/}.
-\end{enumerate}
+\bibitem{deepar}
+D. Salinas, V. Flunkert, J. Gasthaus, and T. Januschowski, "DeepAR: Probabilistic forecasting with autoregressive recurrent networks," \emph{Int. J. Forecasting}, 2020.
 
-\begin{thebibliography}{99}
+\bibitem{conformal}
+Y. Romano, E. Patterson, and E. Candes, "Conformalized quantile regression," \emph{NeurIPS}, 2019.
 
-\bibitem{talebizadeh2014}
-M. Talebizadeh, M. Rashidinejad, and A. Abdollahi, ``Evaluation of electric vehicle charging coordination schemes in distribution networks,'' \emph{Electric Power Systems Research}, vol. 109, pp. 55--65, 2014.
-
-\bibitem{ma2013decentralized}
-Z. Ma, D. S. Callaway, and I. A. Hiskens, ``Decentralized charging control of large populations of plug-in electric vehicles,'' \emph{IEEE Trans. Control Systems Technology}, vol. 21, no. 1, pp. 67--78, 2013.
-
-\bibitem{vaswani2017}
-A. Vaswani \emph{et al.}, ``Attention is all you need,'' in \emph{Proc. NeurIPS}, 2017.
-
-\bibitem{bai2018tcn}
-S. Bai, J. Z. Kolter, and V. Koltun, ``An empirical evaluation of generic convolutional and recurrent networks for sequence modeling,'' arXiv:1803.01271, 2018.
-
-\bibitem{lim2021tft}
-B. Lim, S. O. Arik, N. Loeff, and T. Pfister, ``Temporal fusion transformers for interpretable multi-horizon time series forecasting,'' \emph{International Journal of Forecasting}, vol. 37, no. 4, pp. 1748--1764, 2021.
-
-\bibitem{salinas2020deepar}
-D. Salinas, V. Flunkert, J. Gasthaus, and T. Januschowski, ``DeepAR: Probabilistic forecasting with autoregressive recurrent networks,'' \emph{International Journal of Forecasting}, vol. 36, no. 3, pp. 1181--1191, 2020.
-
-\bibitem{angelopoulos2023conformal}
-A. N. Angelopoulos and S. Bates, ``Conformal prediction: A gentle introduction,'' \emph{Foundations and Trends in Machine Learning}, vol. 16, no. 4, pp. 494--591, 2023.
-
-\bibitem{molnar2022}
-C. Molnar, \emph{Interpretable Machine Learning}, 2nd ed. 2022.
-
-\bibitem{boyd2004convex}
-S. Boyd and L. Vandenberghe, \emph{Convex Optimization}. Cambridge University Press, 2004.
-
-\bibitem{pulp}
-S. Mitchell, M. O'Sullivan, and I. Dunning, ``PuLP: A linear programming toolkit for Python,'' 2011. [Online]. Available: \url{https://coin-or.github.io/pulp/}
-
+\bibitem{transformer}
+A. Vaswani \emph{et al.}, "Attention is all you need," \emph{NeurIPS}, 2017.
 \end{thebibliography}
 
 \end{document}
