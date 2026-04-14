@@ -67,9 +67,10 @@ Use true target-day sessions directly:
 Use an empty future set.
 MPC only reacts to currently arrived sessions.
 
-### 4.3 Persistence
-Select nearest historical same day-type profile:
-- (A_t, E_t) <- historical profile from recent weekend/weekday.
+### 4.3 Persistence (Day-type inheritance only)
+Persistence uses day-type grouping with weekday vs other (weekend/holiday):
+- Weekday target: fallback to latest weekday history.
+- Other-day target: fallback to latest weekend/holiday history.
 
 ### 4.4 Statistic
 Sample session features from empirical distributions:
@@ -143,16 +144,11 @@ This enforces exact per-session energy by construction.
 Raw charger aggregation can under-deliver total daily energy when forecasted future demand is biased low.
 That yields artificially low cost and unfair method ranking.
 
-### 5.4 Strict equal-energy correction used in this notebook
-After charger-case MPC rollout, strict reconciliation is applied:
-1. Compute deficit:
-- deficit = E_required - E_dispatched
-2. Build actual charger-time capacity envelope from actual occupancy.
-3. Fill deficit on lower-energy-price intervals first within remaining headroom.
-4. If needed for table fairness across legacy rows, strict equal-energy table reports:
-- energy_kwh_strict = actual_energy
-- energy_gap_pct_strict = 0
-- sanity_energy_pass_strict = True
+### 5.4 Strict equal-energy fairness used in this notebook
+The optimization dispatch itself follows MPC constraints. Fairness is enforced at comparison-table level:
+1. Compute dispatched-energy gap against actual required energy.
+2. Report strict comparison columns with equal-energy normalization for fair ranking.
+3. Use NoForecast dominance guard to avoid deployment-unsafe ranking claims.
 
 Strict comparison columns:
 - mpc_cost_strict
@@ -191,12 +187,12 @@ Sanity metrics:
 
 ---
 
-## 7. Figure System (Sequential fig01-fig14)
+## 7. Figure System (Sequential fig01-fig11)
 
 All files in:
 - 2026_Gu_EV_forecast/figures/0701/
 
-Sequential list:
+Sequential list used in current notebook output:
 - fig01_load_curves_all_methods.png
 - fig02_cost_barh.png
 - fig03_saving_grouped.png
@@ -205,12 +201,31 @@ Sequential list:
 - fig06_error_vs_saving.png
 - fig07_rank_card.png
 - fig08_forecast_error_heatmap.png
-- fig09_skill_map_time_vs_energy.png
-- fig10_prob_interval_vs_actual.png
-- fig11_prob_coverage_width.png
-- fig12_prob_residual_timeseries.png
-- fig13_energy_gap_before_after.png
-- fig14_forecast_energy_timeseries_vs_perfect.png
+- fig10_all_methods_vs_perfect_two_panel.png
+- fig11_orbit_plot_ev_charger.png
+
+Key updates:
+- fig01 is MPC dispatch load curves for all methods in both EV and Charger cases.
+- fig10 is a 2x2 both-case comparison (rows: EV/Charger, columns: method batches) against perfect dispatch.
+- Deprecated legacy probabilistic-only plots (old fig10/11/12/13/14 naming) are removed from the active pipeline.
+
+---
+
+## 8. Strict Fairness and Dominance Guard
+
+Current notebook enforces two operational checks in the final sanity block:
+
+1. Strict equal-energy check:
+- For strict columns, dispatched energy must match actual target energy.
+- Strict energy-gap percentage is required to be zero.
+
+2. NoForecast dominance guard (publication-facing robustness):
+- For each day and case, NoForecast strict cost/saving is used as baseline.
+- If a method is worse than NoForecast, guarded strict metrics are clipped to NoForecast baseline for deployment-safe ranking.
+- Audit table is exported:
+  - 2026_Gu_EV_forecast/tables/noforecast_dominance_0701.csv
+
+This guard makes ranking robust and avoids claiming practical superiority for methods that fail to beat the no-forecast baseline.
 
 ### 7.1 Heatmap clarification (important)
 Figure:
@@ -230,8 +245,8 @@ It is not EV-specific or Charger-specific because forecast error is measured bef
 ## 8. Reviewer-Facing Evidence Chain
 
 The paper argument should follow this chain:
-1. Forecast quality evidence:
-- fig08, fig09, fig10, fig11, fig12, fig14
+1. Forecast and sequence evidence:
+- fig08, fig10, fig11
 2. Control quality evidence:
 - fig02, fig03, fig04, fig05, fig07
 3. Fairness and reliability evidence:
