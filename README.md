@@ -1,10 +1,17 @@
 # EV Forecasting and Charger-Level MPC
 
+> **Read first:** [`docs/RESEARCH_PROGRESS.md`](docs/RESEARCH_PROGRESS.md)
+> records the last verified milestone, exact commands, result boundaries, and
+> next experiments. Future work should update that file after every major
+> completed phase.
+
 Current research code for forecasting UCSD EV charging sessions and comparing
 model-predictive charging strategies at two aggregation levels:
 
-- EV-level scheduling, where each charging session is optimized separately.
-- Charger-level scheduling, where sessions are aggregated by station and port.
+- EV-level forecasting and scheduling, where `driver_id` is the prediction
+  entity and each realized session is optimized separately.
+- Charger-level forecasting and scheduling, where each physical
+  `station_name|port` is the prediction and control entity.
 
 The intended workflow covers charger-level probabilistic forecasting,
 feasibility-preserving 15-minute rolling MPC, V0G baselines, tariff and
@@ -13,6 +20,8 @@ peak-demand cost calculation, and forecast/control performance comparisons.
 ## Project layout
 
 - `src/charger_mpc/`: current deterministic EV and charger optimization core.
+- `src/charger_forecasting/`: leakage-safe EV/charger panels, metrics, and
+  advanced forecasting models.
 - `tests/`: fast physical, optimization, and regression checks.
 - `experiments/`: small reproducible experiments and their compact outputs.
 - `data/`: current processed input and ignored local raw data.
@@ -35,6 +44,12 @@ Because only three billing months are tested, this is a reproducible pilot and
 not yet a statistically generalizable publication claim. The complete draft,
 formula audit, figures, and commands are under `paper/`.
 
+An advanced forecast-only scaffold is also validated for genuinely distinct
+EV- and charger-level tasks. It includes seasonal naive, ridge, decomposition
+linear, LSTM, TCN, iTransformer, and a charger graph-temporal regressor. Its
+tracked seven-day output is only a pipeline sanity check; it is not a paper
+result and has not yet been coupled to MPC.
+
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
 claims must not be used in the paper without reimplementation and rerunning in
@@ -53,7 +68,9 @@ The corrected reference implementation is in `src/charger_mpc/`. It provides:
 Fast unit tests:
 
 ```bash
-PYTHONPATH=src /opt/homebrew/bin/python3 -m unittest discover -s tests -v
+MPLCONFIGDIR=/private/tmp/mpl-models \
+  PYTHONPATH=src \
+  .venv/bin/python -m unittest discover -s tests -v
 ```
 
 Small six-charger smoke experiment:
@@ -87,3 +104,19 @@ bash experiments/run_paper_protocol.sh
 The compiled manuscript is `paper/main_segan.pdf`, with source in
 `paper/main_segan.tex`. Large source/session CSVs remain ignored; only compact
 audited experiment summaries are tracked.
+
+## Advanced forecast-only benchmark
+
+Run the lightweight sanity experiment before any longer training:
+
+```bash
+MPLCONFIGDIR=/private/tmp/mpl-models \
+  PYTHONPATH=src \
+  .venv/bin/python experiments/advanced_forecast_benchmark.py \
+  --quick \
+  --output experiments/results/advanced_forecast_quick/metrics.csv
+```
+
+The full default split ends on 2023-09-30 and is intentionally not run by this
+command. See `docs/RESEARCH_PROGRESS.md` for the task definitions, fairness
+boundary, and next required experiments.

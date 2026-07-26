@@ -1,0 +1,38 @@
+{
+  "status": "quick_sanity",
+  "data": "data/processed/clean_charging_sessions_enhanced.csv",
+  "panel_start": "2022-01-01",
+  "train_end": "2023-03-31",
+  "validation_end": "2023-06-30",
+  "test_end": "2023-07-07",
+  "fixed_chargers": [
+    "UCSD / GILMAN 2-2|2",
+    "UCSD / SCHOLARS - 07|2",
+    "UCSD / RADY P357 5|2",
+    "UCSD / BIRCH AQUARIUM|1",
+    "UCSD / SCHOLARS - 01|1",
+    "UCSD / SCHOLARS - 08|2"
+  ],
+  "ev_top_k": 24,
+  "ev_minimum_sessions": 12,
+  "target_features": [
+    "session_count",
+    "energy_kwh",
+    "mean_arrival_slot",
+    "mean_departure_slot",
+    "mean_dwell_slots"
+  ],
+  "models": [
+    "SeasonalNaive",
+    "Ridge",
+    "DLinear",
+    "LSTM",
+    "TCN",
+    "iTransformer",
+    "GraphGNN"
+  ],
+  "epochs": 3,
+  "seed": 20260726,
+  "important_boundary": "Forecast-only benchmark; predictions are not yet reconstructed into feasible sessions or evaluated in MPC.",
+  "coverage_warning": "EV metrics are conditional on the training-selected recurrent driver cohort. Compare tasks only with scope coverage visible."
+}
