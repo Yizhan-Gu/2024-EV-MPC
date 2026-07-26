@@ -1,9 +1,0 @@
-step,rows
-raw_rows,445658
-drop_missing_core,434382
-keep_level2,399594
-physical_bounds,381397
-same_day_only,347352
-deduplicate,347352
-iqr_outlier_filter,340229
-effective_kw_filter,340060

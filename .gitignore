@@ -1,4 +1,22 @@
-CP_UCSD_raw_Jul16_Sep24.csv
-CP_UCSD_clean_Jul16_Sep24.csv
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+
+# Local research datasets. Keep compact experiment summaries under
+# experiments/results/ tracked, but never upload source/session tables.
+data/raw/**
+data/processed/*.csv
+archive/legacy_2024/data/**
+
+# Large or noisy historical provenance retained locally only.
+archive/legacy_2024/development_history/**
+archive/legacy_2024/results/**
+archive/unvalidated_2026_copilot_pipeline/pipeline/figures/**
+archive/unvalidated_2026_copilot_pipeline/pipeline/models/**
+archive/unvalidated_2026_copilot_pipeline/pipeline/tables/**
+archive/unvalidated_2026_copilot_pipeline/pipeline/optimization_results.csv
+
+# Local editor/session state.
+.Rhistory
 *.history
-ED_check/
