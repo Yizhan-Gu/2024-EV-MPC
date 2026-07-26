@@ -1,6 +1,6 @@
 # Research progress: EV versus charger forecasting and MPC
 
-Last verified: 2026-07-26
+Last verified: 2026-07-26 (fair Q3 forecast benchmark and Version 2 paper)
 
 This is the read-first handoff for future Codex sessions. Do not infer that a
 long experiment, reference-paper reproduction, or MPC coupling is complete
@@ -35,8 +35,9 @@ must remain archived and must not supply paper claims.
 - Conformal charger MPC reduced billed cost by 28.23% relative to immediate
   charging and by 1.47% relative to point-forecast MPC.
 - These are a three-month pilot, not a general statistical conclusion.
-- The current manuscript is `paper/main_segan.tex`; compiled output is
-  `paper/main_segan.pdf`.
+- The manuscript produced at that milestone is preserved as
+  `paper/main_segan.pdf`; the same source has since been expanded into the
+  Version 2 draft described below.
 
 ### Advanced forecasting scaffold
 
@@ -60,6 +61,107 @@ Completed features:
 - normalized and aggregate energy metrics plus explicit scope coverage;
 - cross-midnight sessions retained and clipped to the 96-slot operating day;
 - no model weights or large intermediate arrays written to Git.
+
+### Fair Q3 EV-versus-charger forecast benchmark
+
+Completed outputs:
+
+- `experiments/results/fair_forecast_q3/coverage_sensitivity.csv`
+- `experiments/results/fair_forecast_q3/seed_20260726/`
+- `experiments/results/fair_forecast_q3/seed_20260727/`
+- `experiments/results/fair_forecast_q3/seed_20260728/`
+- `experiments/results/fair_forecast_q3/fair_comparison_summary.csv`
+- `experiments/results/fair_forecast_q3/full_scope_summary.csv`
+
+Protocol:
+
+- training targets end 2023-03-31;
+- validation targets are 2023-04-01 through 2023-06-30;
+- untouched Q3 test is 2023-07-01 through 2023-09-30;
+- 28-day lookback and 10 maximum epochs;
+- main EV cohort contains all 372 drivers with at least three training
+  sessions at the six fixed ports;
+- `EV` and `ChargerMatched` contain exactly the same realized sessions;
+- `ChargerFull` contains all six-port demand;
+- DLinear, LSTM, TCN, iTransformer, and GraphGNN use three seeds;
+- deterministic/diagnostic baselines use one seed;
+- paired daily uncertainty uses 5,000 seven-day moving-block bootstrap
+  resamples after averaging seed-specific losses by test day.
+
+Verified Q3 scope:
+
+- full scope: 817 session records and 8,916.115 kWh;
+- matched \(h=3\) scope: 239 sessions and 2,654.173 kWh;
+- matched energy coverage: 29.768%;
+- even all 1,230 drivers seen at least once in training cover only 41.503% of
+  Q3 energy.
+
+Matched aggregate daily energy MAE:
+
+| Model | EV (kWh/day) | Charger (kWh/day) | Charger reduction |
+|---|---:|---:|---:|
+| Seasonal naive | 23.20 | 23.20 | 0.0% |
+| Ridge | 95.24 | 21.17 | 77.8% |
+| DLinear | 93.64 | 39.37 | 58.0% |
+| LSTM | 103.19 | 29.98 | 70.9% |
+| TCN | 96.74 | 26.10 | 73.0% |
+| iTransformer | 97.91 | 30.20 | 69.2% |
+
+For DLinear, LSTM, TCN, and iTransformer, the 95% paired block-bootstrap
+interval for daily EV-minus-charger absolute error is strictly positive.
+Seasonal naive is equal to numerical precision, which confirms that matched
+targets and dates are identical and that the seven-day lag commutes with
+aggregation.
+
+The first hurdle-ridge implementation is a retained negative result. Balanced
+participation classification produces small positive predictions across many
+inactive drivers, causing EV aggregate MAE of 1,268.99 kWh/day. Do not omit
+this from the results table or present it as a successful EV solution.
+
+The correct operational EV metric is **no substitution**:
+
+\[
+L^{\mathrm{EV,op}}_t =
+\left|E^{\mathrm{match}}_t-\widehat E^{\mathrm{EV}}_t\right|
++\left(E^{\mathrm{full}}_t-E^{\mathrm{match}}_t\right).
+\]
+
+Known-driver overprediction cannot cancel demand from an unidentified driver.
+Do not replace this metric with
+\(\left|E^{\mathrm{full}}_t-\widehat E^{\mathrm{EV}}_t\right|\), which permits
+physically invalid identity substitution.
+
+Full-demand charger results:
+
+- unreplicated ridge point estimate: 29.59 kWh/day and 30.53% WAPE;
+- three-seed GraphGNN: \(30.40\pm1.48\) kWh/day and 31.37% WAPE;
+- iTransformer is less stable across seeds and must not be called the winner.
+
+### Version 2 manuscript and figures
+
+Current draft:
+
+- source: `paper/main_segan.tex`;
+- compiled versioned PDF: `paper/main_segan_v2.pdf`;
+- new tables: `paper/tables/forecast_fair_comparison.tex` and
+  `paper/tables/forecast_full_scope.tex`;
+- new paper figures:
+  `forecast_matched_scope`,
+  `forecast_operational_scope`, and
+  `forecast_daily_trajectories` in both PDF and PNG.
+
+The manuscript now includes related work, the two prediction tasks, matched
+and no-substitution estimands, iTransformer/GNN equations, the three-seed Q3
+results, bootstrap intervals, negative hurdle results, expanded limitations,
+and an implementation-to-equation audit. The PDF was rendered page by page
+with Poppler for visual QA. The final local build is 17 pages and has no
+overfull boxes, unresolved references, or LaTeX warnings.
+
+Critical claim boundary: the advanced forecasts remain forecast-only. They
+have not been calibrated, reconstructed into feasible nonoverlapping sessions,
+or sent through MPC. The 28.23% V0G saving and 1.47% point-forecast improvement
+come from the separate historical-median/conformal MPC pilot, not from
+iTransformer or GraphGNN.
 
 ## Mathematical benchmark definition
 
@@ -226,7 +328,7 @@ MPLCONFIGDIR=/private/tmp/mpl-models \
   .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Verified result on 2026-07-26: 15 tests passed.
+Verified result on 2026-07-26: 16 tests passed.
 
 Quick benchmark:
 
@@ -248,17 +350,17 @@ experiment matrix or writing the related-work comparison against that paper.
 
 ## Next experiments, in order
 
-1. Add a two-stage EV participation model: predict driver-day activity first,
-   then conditional energy/timing. Include a pooled cold-start or residual
-   demand component so full charger energy has an honest EV-level comparator.
+1. Replace the failed class-balanced hurdle with a validation-calibrated
+   rare-event objective or hierarchical count model. Preserve the failed
+   baseline as a negative result.
 2. Add PatchTST and TimeMixer as targeted ablations; consider SAMformer if
    small-sample instability remains visible. Do not add a large pretrained
    model unless it beats strong simple baselines under the same split.
 3. Replace or augment correlation edges with physical/spatial charger edges
    if trustworthy metadata are available; compare fixed, learned, and no-graph
    adjacency.
-4. Use rolling-origin folds and at least three random seeds. Report bootstrap
-   confidence intervals and paired loss tests rather than a single split.
+4. Extend beyond the current three-seed Q3 benchmark to rolling-origin folds,
+   multiple port cohorts, and at least 12 billing months.
 5. Calibrate count, energy, and timing uncertainty using validation-only
    residuals.
 6. Reconstruct feasible sessions/envelopes from each task's predictions and

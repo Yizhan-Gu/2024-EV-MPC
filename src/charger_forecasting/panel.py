@@ -91,6 +91,7 @@ def _select_entities(
     top_k: int | None,
     minimum_sessions: int,
     charger_filter: set[str] | None,
+    driver_filter: set[str] | None,
 ) -> tuple[str, ...]:
     counts: Counter[str] = Counter()
     energy: Counter[str] = Counter()
@@ -101,6 +102,11 @@ def _select_entities(
                 continue
             charger_id = _charger_id(row)
             if charger_filter is not None and charger_id not in charger_filter:
+                continue
+            if (
+                driver_filter is not None
+                and str(row["driver_id"]) not in driver_filter
+            ):
                 continue
             entity_id = _entity_id(row, level)
             counts[entity_id] += 1
@@ -133,6 +139,7 @@ def build_daily_panel(
     top_k: int | None = None,
     minimum_sessions: int = 1,
     charger_filter: Iterable[str] | None = None,
+    driver_filter: Iterable[str] | None = None,
 ) -> PanelData:
     """Build a daily panel without using post-selection outcomes.
 
@@ -151,6 +158,7 @@ def build_daily_panel(
     charger_set = (
         None if charger_filter is None else set(charger_filter)
     )
+    driver_set = None if driver_filter is None else set(driver_filter)
     if entity_ids is None:
         selected = _select_entities(
             panel_path,
@@ -160,6 +168,7 @@ def build_daily_panel(
             top_k=top_k,
             minimum_sessions=minimum_sessions,
             charger_filter=charger_set,
+            driver_filter=driver_set,
         )
     else:
         selected = tuple(dict.fromkeys(str(value) for value in entity_ids))
@@ -183,6 +192,11 @@ def build_daily_panel(
                 continue
             charger_id = _charger_id(row)
             if charger_set is not None and charger_id not in charger_set:
+                continue
+            if (
+                driver_set is not None
+                and str(row["driver_id"]) not in driver_set
+            ):
                 continue
             entity_id = _entity_id(row, level)
             entity_idx = entity_index.get(entity_id)

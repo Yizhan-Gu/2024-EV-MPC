@@ -1,5 +1,25 @@
 # Deterministic smoke results
 
+## Fair Q3 EV-versus-charger forecasting
+
+`fair_forecast_q3/` contains the compact forecast-only paper results:
+
+- training through 2023-03-31, April--June validation, and untouched Q3 test;
+- a training-selected 372-driver cohort requiring at least three historical
+  sessions;
+- identical realized sessions for `EV` and `ChargerMatched`;
+- all six-port demand for `ChargerFull`;
+- three seeds for DLinear, LSTM, TCN, iTransformer, and GraphGNN;
+- coverage sensitivity, daily predictions, paired seven-day block-bootstrap
+  summaries, and full-scope summaries.
+
+The matched cohort covers 29.77% of full Q3 energy. Operational EV errors use a
+no-substitution metric, so excess energy assigned to a known driver cannot
+cancel energy belonging to an unidentified driver.
+
+These results have not yet been passed through MPC. Economic results below come
+from the separate historical-median/conformal controller experiment.
+
 ## Continuous three-day billing experiment
 
 The continuous experiment uses the same six chargers on all three target days.

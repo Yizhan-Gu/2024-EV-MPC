@@ -124,6 +124,7 @@ def regression_metrics(
     if actual.shape[0] != len(target_dates):
         raise ValueError("one target date is required per panel day")
     active = actual[..., 0] > 0.0
+    predicted_active = prediction[..., 0] >= 0.5
     count_error = np.abs(actual[..., 0] - prediction[..., 0])
     energy_error = np.abs(actual[..., 1] - prediction[..., 1])
     metrics = {
@@ -132,7 +133,23 @@ def regression_metrics(
         "energy_wape": float(
             energy_error.sum() / max(1e-9, actual[..., 1].sum())
         ),
+        "actual_active_rate": float(active.mean()),
+        "predicted_active_rate": float(predicted_active.mean()),
     }
+    true_positive = float(np.logical_and(active, predicted_active).sum())
+    false_positive = float(
+        np.logical_and(~active, predicted_active).sum()
+    )
+    false_negative = float(
+        np.logical_and(active, ~predicted_active).sum()
+    )
+    precision = true_positive / max(1.0, true_positive + false_positive)
+    recall = true_positive / max(1.0, true_positive + false_negative)
+    metrics["participation_precision"] = precision
+    metrics["participation_recall"] = recall
+    metrics["participation_f1"] = (
+        2.0 * precision * recall / max(1e-9, precision + recall)
+    )
     for name, feature_idx in (
         ("arrival_mae_slots", 2),
         ("departure_mae_slots", 3),

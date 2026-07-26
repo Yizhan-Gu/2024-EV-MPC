@@ -169,6 +169,59 @@ class AdvancedForecastingTests(unittest.TestCase):
         self.assertAlmostEqual(panel.values[0, 0, 3], 96.0)
         self.assertAlmostEqual(panel.values[0, 0, 4], 3.0)
 
+    def test_matched_charger_scope_contains_same_driver_energy(self) -> None:
+        fields = [
+            "driver_id",
+            "session_start_time_la",
+            "session_end_time_la",
+            "total_energy_dispensed",
+            "station_name",
+            "port",
+        ]
+        rows = [
+            {
+                "driver_id": "included",
+                "session_start_time_la": "2023-01-01T08:00:00",
+                "session_end_time_la": "2023-01-01T10:00:00",
+                "total_energy_dispensed": "5.0",
+                "station_name": "Station A",
+                "port": "1",
+            },
+            {
+                "driver_id": "excluded",
+                "session_start_time_la": "2023-01-01T12:00:00",
+                "session_end_time_la": "2023-01-01T14:00:00",
+                "total_energy_dispensed": "9.0",
+                "station_name": "Station A",
+                "port": "1",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions.csv"
+            with path.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+            ev_panel = build_daily_panel(
+                path,
+                level="ev",
+                start="2023-01-01",
+                end="2023-01-01",
+                selection_end="2023-01-01",
+                entity_ids=("included",),
+            )
+            charger_panel = build_daily_panel(
+                path,
+                level="charger",
+                start="2023-01-01",
+                end="2023-01-01",
+                selection_end="2023-01-01",
+                entity_ids=("Station A|1",),
+                driver_filter=ev_panel.entity_ids,
+            )
+        self.assertAlmostEqual(ev_panel.values[..., 1].sum(), 5.0)
+        self.assertAlmostEqual(charger_panel.values[..., 1].sum(), 5.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -44,11 +44,15 @@ Because only three billing months are tested, this is a reproducible pilot and
 not yet a statistically generalizable publication claim. The complete draft,
 formula audit, figures, and commands are under `paper/`.
 
-An advanced forecast-only scaffold is also validated for genuinely distinct
-EV- and charger-level tasks. It includes seasonal naive, ridge, decomposition
-linear, LSTM, TCN, iTransformer, and a charger graph-temporal regressor. Its
-tracked seven-day output is only a pipeline sanity check; it is not a paper
-result and has not yet been coupled to MPC.
+The advanced forecast-only phase now includes a matched-scope Q3 comparison of
+genuinely distinct EV- and charger-level tasks. It includes seasonal naive,
+ridge, hurdle regression, decomposition linear, LSTM, TCN, iTransformer, and a
+charger graph-temporal regressor. On identical recurring-driver sessions,
+charger aggregation reduces three-seed aggregate daily energy MAE by 58.0% to
+73.0% across DLinear, LSTM, TCN, and iTransformer. The selected EV cohort
+covers 29.77% of full six-port Q3 energy, so full-demand results also use a
+no-substitution operational metric. These advanced forecasts have not yet been
+reconstructed into sessions or coupled to MPC.
 
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
@@ -101,9 +105,10 @@ Run the full frozen protocol (local processed data required):
 bash experiments/run_paper_protocol.sh
 ```
 
-The compiled manuscript is `paper/main_segan.pdf`, with source in
-`paper/main_segan.tex`. Large source/session CSVs remain ignored; only compact
-audited experiment summaries are tracked.
+The current Version 2 manuscript is `paper/main_segan_v2.pdf`, with source in
+`paper/main_segan.tex`. Version 1 remains `paper/main_segan.pdf`. Large
+source/session CSVs remain ignored; only compact audited experiment summaries
+are tracked.
 
 ## Advanced forecast-only benchmark
 
@@ -117,6 +122,7 @@ MPLCONFIGDIR=/private/tmp/mpl-models \
   --output experiments/results/advanced_forecast_quick/metrics.csv
 ```
 
-The full default split ends on 2023-09-30 and is intentionally not run by this
-command. See `docs/RESEARCH_PROGRESS.md` for the task definitions, fairness
-boundary, and next required experiments.
+The full Q3 three-seed outputs are tracked under
+`experiments/results/fair_forecast_q3/`. See `docs/RESEARCH_PROGRESS.md` for
+the task definitions, fairness boundary, exact results, and next required
+experiments.

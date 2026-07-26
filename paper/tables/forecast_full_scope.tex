@@ -1,0 +1,14 @@
+\begin{tabular}{lrrr}
+\toprule
+Charger model & Seeds & Full-demand MAE (kWh/day) & Energy WAPE \\
+\midrule
+Ridge & 1 & 29.59 & 30.5\% \\
+GraphGNN & 3 & 30.40 & 31.4\% \\
+LSTM & 3 & 33.38 & 34.4\% \\
+TCN & 3 & 33.45 & 34.5\% \\
+Seasonal naive & 1 & 36.89 & 38.1\% \\
+Hurdle ridge & 1 & 38.64 & 39.9\% \\
+iTransformer & 3 & 39.23 & 40.5\% \\
+DLinear & 3 & 42.04 & 43.4\% \\
+\bottomrule
+\end{tabular}

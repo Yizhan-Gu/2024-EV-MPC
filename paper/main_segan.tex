@@ -14,7 +14,7 @@
   linkcolor=blue,
   citecolor=blue,
   urlcolor=blue,
-  pdftitle={Forecast-Calibrated Charger-Based Model Predictive Control for Unidirectional Workplace EV Charging},
+  pdftitle={From Individual EVs to Physical Chargers: Leakage-Safe Forecasting and Model Predictive Control for Workplace Charging},
   pdfauthor={Yizhan Gu}
 }
 \newtheorem{proposition}{Proposition}
@@ -25,46 +25,48 @@
 \newcommand{\pos}[1]{\left[#1\right]_{+}}
 \DeclareMathOperator*{\argmin}{arg\,min}
 
-\title{\textbf{Forecast-Calibrated Charger-Based Model Predictive Control for
-Unidirectional Workplace EV Charging}\\
-\large Exact aggregation, continuous demand-charge accounting, and a
-three-month out-of-sample pilot}
+\title{\textbf{From Individual EVs to Physical Chargers: Leakage-Safe
+Forecasting and Model Predictive Control for Workplace Charging}\\
+\large Matched-scope prediction, exact aggregation, and continuous
+demand-charge accounting}
 \author{Yizhan Gu\\
 University of California San Diego, La Jolla, CA, USA}
-\date{Draft generated July 26, 2026\\
+\date{Version 2 draft generated July 26, 2026\\
 \small Target journal: \emph{Sustainable Energy, Grids and Networks}}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This paper studies whether forecast uncertainty can create measurable economic
-value in charger-based model predictive control (MPC) for unidirectional
-workplace electric-vehicle charging.  The setting intentionally excludes
-vehicle-to-grid export, battery storage, photovoltaics, and demand response;
-therefore, economic value means avoided charging cost rather than market
-revenue.  We first derive a sparse charger-level linear program whose
-cumulative-energy envelopes are an exact projection of the session-level
-problem when sessions do not overlap on a physical port.  The controller carries
-executed noncoincident and on-peak demand states continuously through each
-billing month, preventing the repeated daily demand-charge approximation that
-can severely distort results.  A causal four-week same-weekday median forecast
-is then corrected with one-sided split-conformal residuals for late arrival,
-early departure, and underpredicted energy.  We evaluate six fixed UC San Diego
-ports over 92 unseen days in July--September 2023.  All 552 day--method runs
-serve the required energy without fallback.  The conformal controller costs
-\$4,177.90, a 28.23\% reduction from immediate charging and a 1.47\% reduction
-from point-forecast MPC; its regret to perfect information is 4.43\%.  Empirical
-one-sided coverages are 91.5\%, 91.5\%, and 90.2\% against a 90\% target.
-However, the conformal method improves only two of three billing months, so the
-result is a reproducible pilot rather than evidence of statistical
-generalization.  Synthetic tests preserve the EV-level objective to
-\(1.14\times10^{-12}\) and give a median \(2.07\times\) speedup at eight
-sessions per charger.
+This paper asks whether the physical charger is a more useful prediction and
+control entity than the individual electric vehicle (EV) for unidirectional
+workplace charging.  The setting excludes vehicle-to-grid export, battery
+storage, photovoltaics, and demand response; economic value therefore means
+avoided charging cost rather than market revenue.  We construct two genuinely
+different next-day forecasting tasks and prevent a common comparison error by
+evaluating individual-EV and charger models on exactly the same sessions.  A
+second operational metric retains all charger demand and penalizes EV demand
+that cannot be assigned to a driver observed often enough during training.  In
+a chronological July--September 2023 test, the recurring-driver cohort
+represents 29.77\% of full energy.  On this identical matched scope, charger
+aggregation reduces aggregate daily energy mean absolute error by 57.95\% for
+DLinear, 70.94\% for LSTM, 73.02\% for TCN, and 69.16\% for iTransformer,
+averaged over three seeds.  A seasonal-naive forecast is identical at both
+resolutions, providing an algebraic and numerical scope check.  We then derive
+a sparse charger-level linear program whose cumulative-energy envelopes are an
+exact projection of the session-level problem when sessions do not overlap on
+a physical port.  A separate forecast-calibrated MPC pilot carries executed
+demand peaks continuously through each billing month.  Across the same 92
+test days, conformal MPC costs \$4,177.90, 28.23\% below immediate charging and
+1.47\% below point-forecast MPC, with zero unserved energy.  The advanced
+forecasters have not yet been reconstructed into feasible sessions and coupled
+to MPC; consequently, their economic value remains a pre-registered next
+experiment rather than a result of this draft.
 \end{abstract}
 
-\noindent\textbf{Keywords:} electric-vehicle charging; charger aggregation;
-model predictive control; conformal prediction; demand charges; forecast value
+\noindent\textbf{Keywords:} electric-vehicle charging; charger-based
+forecasting; individual-EV forecasting; graph neural network; iTransformer;
+model predictive control; demand charges
 
 \section{Introduction}
 
@@ -77,7 +79,8 @@ across a vehicle's arrival or deadline and consequently report false savings.
 The first question in this work is therefore structural: under which operating
 conditions is a charger representation both smaller and exactly feasible?
 
-The second question concerns uncertainty.  Classical charging formulations
+The second question concerns prediction resolution and uncertainty.  Classical
+charging formulations
 optimize known requests \citep{sortomme2011optimal,gan2013optimal}, whereas
 closed-loop station control must act before later sessions are observed.
 Stochastic EV-station models explicitly consider uncertain arrival, departure,
@@ -86,20 +89,188 @@ machine-learning forecasts with conformal uncertainty sets and reports a
 roughly 1\% improvement over deterministic point forecasts in a richer
 PV--battery setting \citep{fernandez2025conformal}.  Here we isolate the
 charger-control effect: there is no storage, PV, export, V2G, or demand-response
-signal.
+signal.  Importantly, changing an optimization index after making one shared
+forecast does not compare EV and charger forecasting.  Each representation
+must define its own prediction entities, training panel, and error process.
 
 Our contributions are:
 \begin{enumerate}
+  \item a leakage-safe, matched-scope protocol that compares individual-EV and
+  charger forecasts on exactly the same realized sessions and separately
+  quantifies open-set driver coverage;
+  \item a common model ladder spanning seasonal naive, ridge, hurdle
+  regression, DLinear, LSTM, TCN, iTransformer, and a charger graph-temporal
+  regressor;
   \item an exact sparse charger projection for nonoverlapping physical-port
   sessions, together with an explicit disaggregation argument;
   \item a rolling MPC implementation that carries executed billing-peak states
   across days and evaluates only incremental monthly demand cost;
-  \item a leakage-controlled comparison of no forecast, persistence,
+  \item a leakage-controlled control comparison of no forecast, persistence,
   historical-median, one-sided conformal, and perfect-information forecasts;
   and
-  \item numerical invariance, feasibility, coverage, and scalability audits
+  \item numerical invariance, feasibility, predictive coverage, paired
+  block-bootstrap, and scalability audits
   that make the boundary of the current evidence explicit.
 \end{enumerate}
+
+\section{Related work and research gap}
+
+\subsection{Time-series forecasting architectures}
+
+Strong modern forecasting comparisons must include simple models.
+DLinear decomposes a series into moving-average trend and seasonal residuals
+before linear projection and has challenged the assumption that deeper
+Transformers are automatically superior \citep{zeng2023dlinear}.  PatchTST
+uses channel-independent patch tokens to extend the effective history at lower
+attention cost \citep{nie2023patchtst}.  iTransformer instead embeds the
+complete history of each physical variable as a token and applies attention
+across variables \citep{liu2024itransformer}.  This inversion is natural for
+the five correlated session attributes used here.  SAMformer further shows
+that shallow attention, reversible normalization, and sharpness-aware
+optimization can be competitive in small-data regimes
+\citep{ilbert2024samformer}.  We therefore treat architecture complexity as an
+experimental factor, not as the scientific contribution.
+
+\subsection{Spatio-temporal charging-demand forecasting}
+
+Graph WaveNet learns latent adjacency jointly with dilated temporal
+convolutions \citep{wu2019graphwavenet}, motivating graph models when charging
+ports share location, calendar, or mobility structure.  Recent EV demand
+preprints combine station graphs with multi-frequency or large-model features
+\citep{fan2025evstllm} and graph convolutions with traffic, weather, and
+temporal encoders \citep{tupayachi2025twgcn}.  These studies reinforce the
+importance of station-level spatial structure, but do not isolate the
+statistical effect of changing the prediction entity from individual EV to
+physical charger on an identical set of sessions.  Our matched-scope design
+targets that gap.  It also exposes a deployment issue that aggregate
+station-demand studies can hide: a driver-specific forecaster cannot identify
+a driver absent from its training history without reservation, fleet, or
+mobility information.
+
+\section{Forecasting at two entity resolutions}
+\subsection{Daily targets and chronological information}
+
+Let \(n\) denote either a driver in the EV task or a physical
+station--port pair in the charger task.  The next-day target is
+\begin{equation}
+ \mathbf y_{t,n}=
+ [c_{t,n},e_{t,n},a_{t,n},d_{t,n},\ell_{t,n}]^\top,       \label{eq:paneltarget}
+\end{equation}
+where \(c\) is session count, \(e\) is total energy, \(a\) and \(d\) are mean
+arrival and departure slots, and \(\ell\) is mean dwell duration.  Timing
+features are undefined and masked when \(c_{t,n}=0\).  Both tasks use the same
+feature semantics, 28-day lookback, and calendar sine/cosine covariates.
+
+All selection and normalization end with the training interval.  The driver
+cohort for minimum history \(h\) is
+\begin{equation}
+ \mathcal D_h=
+ \left\{i:
+ \sum_{t\in\T_{\mathrm{train}}}c_{t,i}\ge h
+ \right\}.                                             \label{eq:drivercohort}
+\end{equation}
+The main forecast experiment fixes \(h=3\), yielding 372 drivers.  The charger
+set is the same six physical ports used by the MPC pilot.  The data windows are
+January 2022--March 2023 for training, April--June 2023 for validation, and
+July--September 2023 for testing.  The test period does not determine driver
+eligibility, scaling, graph edges, early stopping, or any hyperparameter.
+
+\subsection{Matched and operational estimands}
+
+Comparing per-entity errors would be invalid because a charger aggregates more
+energy than a driver.  We instead define a matched charger panel using only
+sessions whose drivers belong to \(\mathcal D_h\).  Hence, for every day,
+\begin{equation}
+ \sum_{i\in\mathcal D_h} e_{t,i}
+ =
+ \sum_{c\in\mathcal C} e^{\mathrm{match}}_{t,c}.          \label{eq:matchedidentity}
+\end{equation}
+Both models are evaluated after summing their predictions to daily energy.
+The matched daily loss is
+\begin{equation}
+ L^{r}_{t,m}
+ =
+ \left|
+ \sum_{n\in\mathcal N_r}e_{t,n}
+ -
+ \sum_{n\in\mathcal N_r}\widehat e^{m}_{t,n}
+ \right|,
+ \quad r\in\{\mathrm{EV},\mathrm{charger}\}.             \label{eq:matchedloss}
+\end{equation}
+Equation~\eqref{eq:matchedidentity} guarantees a common target and denominator.
+
+Matched scope does not describe deployment coverage.  Let full six-port energy
+be \(E^{\mathrm{full}}_t\), matched energy be
+\(E^{\mathrm{match}}_t\), and unmodelled energy be
+\(U_t=E^{\mathrm{full}}_t-E^{\mathrm{match}}_t\ge0\).
+An overprediction for one known driver cannot substitute for an unseen driver
+on another physical session.  We therefore define the no-substitution
+operational EV loss
+\begin{equation}
+ L^{\mathrm{EV,op}}_{t,m}
+ =
+ \left|
+ E^{\mathrm{match}}_t-\widehat E^{\mathrm{EV},m}_t
+ \right|+U_t,                                          \label{eq:nosub}
+\end{equation}
+and operational WAPE
+\begin{equation}
+ \operatorname{WAPE}^{\mathrm{EV,op}}_m
+ =
+ \frac{\sum_tL^{\mathrm{EV,op}}_{t,m}}
+ {\sum_tE^{\mathrm{full}}_t}.                           \label{eq:opwape}
+\end{equation}
+This prevents aggregate cancellation between fictitious energy assigned to an
+absent known driver and energy belonging to an unidentified driver.
+
+\subsection{Models and objectives}
+
+The common ladder comprises seasonal naive, ridge regression, a two-stage
+hurdle model, DLinear, LSTM, TCN, and iTransformer.
+The seasonal-naive prediction is
+\(\widehat{\mathbf y}_{t,n}=\mathbf y_{t-7,n}\).
+Because summation and the seven-day lag commute, its EV and charger aggregate
+predictions must be identical under~\eqref{eq:matchedidentity}; this is an
+explicit pipeline check.
+
+Neural models minimize
+\begin{equation}
+ \mathcal L(\theta)=
+ \frac{\sum_{t,n,f}m_{t,n,f}
+ (\widehat y_{t,n,f}-y_{t,n,f})^2}
+ {\sum_{t,n,f}m_{t,n,f}},                              \label{eq:forecastloss}
+\end{equation}
+where count and energy receive weight three on active days and timing targets
+are masked on inactive days.  Scaling statistics use training data only.
+
+For iTransformer, the complete lookback of variable \(f\) becomes one token:
+\begin{equation}
+ \mathbf z_f=W_x[x_{t-L+1,f},\ldots,x_{t,f}]^\top
+ +\mathbf e_f,\qquad
+ \mathbf H=\operatorname{Encoder}([\mathbf z_1,\ldots,\mathbf z_F]).
+                                                               \label{eq:itransformer}
+\end{equation}
+Attention operates across session attributes while the feed-forward network
+acts on each attribute token.
+
+The charger-only graph model first encodes each port history with a shared GRU.
+Its adjacency uses the top three absolute energy correlations computed only on
+training days.  After adding self-loops and symmetric normalization,
+\(\widetilde A=D^{-1/2}(A+I)D^{-1/2}\), one graph layer gives
+\begin{equation}
+ \mathbf G_t=
+ \sigma(W_s\mathbf H_t+W_g\widetilde A\mathbf H_t+
+ W_q\mathbf q_t),\qquad
+ \widehat{\mathbf Y}_{t+1}=W_o\mathbf G_t,              \label{eq:graphforecast}
+\end{equation}
+where \(\mathbf q_t\) contains calendar covariates.
+
+For stochastic models we report three deterministic seeds.  Daily paired
+differences \(L^{\mathrm{EV}}_{t,m}-L^{\mathrm{charger}}_{t,m}\) are summarized
+after averaging seed-specific losses by day.  A moving-block bootstrap with
+seven-day blocks and 5,000 resamples provides 95\% intervals; these intervals
+address short serial dependence but do not replace replication across sites
+or seasons.
 
 \section{Physical and tariff model}
 \subsection{Sets, data, and assumptions}
@@ -293,6 +464,7 @@ but no fictitious session is synthesized because its physical window and
 energy would be unknown.
 
 \subsection{Receding-horizon information pattern}
+\label{sec:rolling}
 
 At interval \(t\), the work set contains (i) actual connected sessions rebased
 to their remaining energy and (ii) forecasts whose predicted arrival is later
@@ -323,8 +495,16 @@ objective is always the primary tariff cost.
 \subsection{Data and leakage control}
 
 The local UCSD charging table contains 340,060 sessions from July 20, 2016 to
-September 16, 2024, covering 291 ports.  The paper pilot uses six fixed ports
-and 808 sessions during July 1--September 30, 2023.  Ports are ranked by
+September 16, 2024, covering 291 ports.  The forecast benchmark uses 817 raw
+session records and 8,916.115 kWh on six fixed ports during July
+1--September 30, 2023.  The \(h=3\) matched cohort contains 372
+training-eligible drivers, 239 test sessions, and 2,654.173 kWh.  Thus it
+represents 29.25\% of test sessions and 29.77\% of test energy.  Even \(h=1\)
+represents only 41.50\% of test energy: most Q3 energy belongs to drivers with
+no training-period record at these ports.
+
+The control pilot applies its physical and nonoverlap screens and uses 808
+sessions over the same dates.  Ports are ranked by
 activity and energy using May--June only; a data-quality screen additionally
 requires nonoverlap throughout the loaded evaluation window.  This screen uses
 test-period timestamps only to verify the structural assumption and does not
@@ -342,7 +522,25 @@ untouched.  The final 680 matched residuals give
 The 90th percentile count-underprediction residual is one session, but is
 reported rather than converted to a synthetic request.
 
-\subsection{Methods and metrics}
+\subsection{Forecast methods and metrics}
+
+The forecasting comparison has three task labels.  \emph{EV} predicts each
+eligible driver separately.  \emph{ChargerMatched} aggregates exactly those
+drivers to the six ports.  \emph{ChargerFull} uses all sessions at the same
+ports.  EV and ChargerMatched share the same realized energy by construction;
+ChargerFull measures operational station demand.  We report per-entity
+count, energy, and timing errors for diagnostics, but the primary comparison
+uses aggregate daily energy MAE in~\eqref{eq:matchedloss}.  Full-scope
+deployability uses~\eqref{eq:opwape}.
+
+The hurdle model first classifies whether an entity is active and then
+regresses attributes conditional on activity.  It is retained even when it
+fails because rare-event class weighting can generate widespread small
+positive predictions across hundreds of inactive drivers.  GraphGNN is
+charger-only and is therefore reported for full-demand forecasting, not as a
+matched architecture pair.
+
+\subsection{Control methods and metrics}
 
 Six controllers share the same tariff, physical model, state update, and
 solver:
@@ -369,6 +567,95 @@ energy is below \(10^{-5}\) kWh, the solver reports optimality at every call,
 fallback count is zero, and peak states are monotone within each month.
 
 \section{Results}
+\subsection{Fair EV-versus-charger forecasting}
+
+\begin{table}[h!]
+\centering
+\caption{Matched-scope Q3 forecasting.  EV and charger columns predict
+identical realized sessions.  ``Reduction'' is the charger MAE reduction
+relative to EV MAE.  The final column is the 95\% moving-block-bootstrap
+interval for paired daily EV-minus-charger absolute error.}
+\label{tab:fairforecast}
+\resizebox{\linewidth}{!}{\input{tables/forecast_fair_comparison.tex}}
+\end{table}
+
+Table~\ref{tab:fairforecast} shows the consequence of entity resolution.
+Seasonal naive is equal to numerical precision at 23.20 kWh/day because its
+lag operator commutes with aggregation.  This equality is a strong audit:
+neither side receives a different target or test-day filter.  Ridge and all
+four neural architectures instead accumulate errors across 372 sparse driver
+series.  Charger-level MAE is 57.95\% lower for DLinear, 70.94\% lower for
+LSTM, 73.02\% lower for TCN, and 69.16\% lower for iTransformer.  Their paired
+block-bootstrap intervals for EV-minus-charger daily error are entirely
+positive.  The intervals quantify Q3 day-level uncertainty conditional on
+this site, cohort, split, and model-fitting procedure; they do not establish
+cross-site generalization.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{forecast_matched_scope.pdf}
+\caption{Aggregate next-day energy error on identical recurring-driver
+sessions.  Bars are means over three seeds for neural models and one
+deterministic run for seasonal naive and ridge; error bars show seed standard
+deviation.  Hurdle ridge is omitted from the plot to retain a readable scale
+but remains in Table~\ref{tab:fairforecast}.}
+\label{fig:matchedforecast}
+\end{figure}
+
+The hurdle result is a useful negative control.  Balanced participation
+classification produces many small false-positive driver forecasts; after
+summation, EV MAE reaches 1,268.99 kWh/day even though per-driver errors look
+small.  Aggregating first reduces this rare-event multiplicity and gives
+16.52 kWh/day.  This result is not evidence that all hurdle designs fail.
+Rather, it demonstrates why per-driver MAE and class-balanced accuracy are
+insufficient objectives for an aggregate control application.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{forecast_operational_scope.pdf}
+\caption{Operational scope.  Left: Q3 energy represented as the minimum
+training-history requirement changes; entity selection uses training data
+only.  Right: no-substitution EV WAPE versus full-demand charger WAPE.
+Overprediction assigned to one driver cannot cancel energy from an
+unidentified driver.}
+\label{fig:operationalscope}
+\end{figure}
+
+Figure~\ref{fig:operationalscope} separates prediction accuracy from
+deployability.  The main \(h=3\) EV cohort misses 70.23\% of full energy before
+any regression error is considered.  Across the common models, its
+no-substitution operational WAPE ranges from 94.17\% for seasonal naive to
+176.70\% for LSTM, whereas full-demand charger WAPE ranges from 30.53\% to
+43.37\% for the corresponding non-hurdle baselines and neural models.  The
+unreplicated ridge charger baseline has the lowest point estimate
+(29.59 kWh/day, 30.53\% WAPE).  Among three-seed models, GraphGNN is most stable
+at \(30.40\pm1.48\) kWh/day and 31.37\% WAPE.
+
+\begin{table}[t]
+\centering
+\caption{Full six-charger Q3 next-day energy forecasting.  Neural entries use
+three seeds; deterministic entries use one run.}
+\label{tab:fullforecast}
+\input{tables/forecast_full_scope.tex}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{forecast_daily_trajectories.pdf}
+\caption{Q3 trajectories averaged over available seeds.  Top: full-demand
+GraphGNN charger prediction.  Bottom: iTransformer at both entity resolutions
+on the identical matched scope.  Periodic positive bias across many sparse
+driver forecasts accumulates at EV resolution.}
+\label{fig:forecasttrajectory}
+\end{figure}
+
+The advanced experiment is forecast-only.  It establishes a statistical and
+operational motivation for charger-based prediction but does not yet establish
+economic value.  Converting predicted counts and attributes into nonoverlapping
+session envelopes, calibrating uncertainty, and passing those envelopes
+through the rolling MPC are required before associating the error reductions
+with avoided cost.
+
 \subsection{Control value and forecast calibration}
 
 \begin{table}[t]
@@ -467,18 +754,44 @@ unqualified aggregation speedup.
 \clearpage
 \section{Discussion and limitations}
 
-The experiment supports three conclusions.  First, billing state is part of
-the controller state: isolated-day demand accounting is not an innocuous
-reporting choice.  Second, charger aggregation can be exact and computationally
-useful, but only because physical nonoverlap enables unambiguous
-disaggregation.  Third, a simple calibrated uncertainty correction has
-positive Q3 economic value, despite worse point MAE, illustrating that forecast
-quality should be evaluated through downstream control as well as prediction.
+The experiments support five bounded conclusions.  First, prediction entity is
+not a cosmetic modeling choice.  On an identical session set, advanced
+driver-level errors accumulate across hundreds of sparse series, whereas the
+charger model learns the aggregate target directly.  Second, a matched-scope
+metric alone is incomplete: open-set driver coverage limits the operational
+value of individual-EV forecasts when no reservation or mobility information
+is available.  Third, billing state is part of the controller state:
+isolated-day demand accounting is not an innocuous reporting choice.  Fourth,
+charger aggregation can be exact and computationally useful, but only because
+physical nonoverlap enables unambiguous disaggregation.  Fifth, a simple
+calibrated uncertainty correction has positive Q3 economic value despite worse
+point MAE, illustrating that forecast quality should ultimately be evaluated
+through downstream control.
+
+The seasonal-naive equality also clarifies what the results do not show.
+Aggregation alone cannot improve every forecasting rule: any linear forecast
+that commutes with summation and uses identical information can give the same
+aggregate output.  The observed charger advantage arises when model fitting,
+regularization, nonlinear representation, or rare-event participation behaves
+differently at the two resolutions.  This distinction is important for a
+theoretical revenue argument.  The relevant quantity is not ``charger versus
+EV'' in isolation, but the interaction among entity resolution, estimator,
+uncertainty calibration, and the downstream control objective.
 
 The evidence is deliberately bounded:
 \begin{itemize}
  \item six ports and three billing months do not establish statistical
- significance, seasonality robustness, or campus-wide generalization;
+significance, seasonality robustness, or campus-wide generalization;
+ \item the advanced forecast test uses one chronological Q3 split and three
+ seeds rather than multiple years, sites, or rolling-origin folds;
+ \item the individual-EV task has no reservation, employer schedule, mobility,
+ or fleet-assignment data, so unseen-driver coverage is a limitation of the
+ available information pattern rather than an impossibility theorem;
+ \item correlation graph edges are learned from historical energy only;
+ physical distance, electrical topology, traffic, and weather are not used;
+ \item advanced model predictions have not been calibrated, reconstructed into
+ nonoverlapping sessions, or evaluated in MPC, so their revenue effect is
+ unknown;
  \item the cohort's nonoverlap requirement excludes shared-port anomalies and
  simultaneous connector use;
  \item calibration is marginal and ordinal-matched; it gives neither joint
@@ -493,31 +806,44 @@ quantity is avoided charging cost.
 \end{itemize}
 
 A submission-strength next experiment should pre-register multiple disjoint
-port cohorts, extend the untouched test to at least 12 billing months, report
-block-bootstrap confidence intervals at the month or charger-month level, and
-compare learned quantile or distributional session models under the identical
-MPC and tariff evaluator.  That design can determine whether the observed
-1.47\% improvement is stable rather than a Q3-specific pilot effect.
+port cohorts, extend the untouched test to at least 12 billing months, and use
+rolling-origin folds.  Forecast counts and attributes should be mapped to
+feasible ordinal session templates using training-only distributions, followed
+by validation-only conformal calibration.  Individual-EV and charger forecasts
+must then enter their corresponding rolling MPCs under the identical tariff,
+information arrival, feasibility checks, and monthly peak state.  Block
+bootstrap at the month or charger-month level can test both forecast and cost
+differences.  That experiment can determine whether lower charger error creates
+stable avoided cost and whether the observed 1.47\% conformal improvement is
+more than a Q3-specific pilot effect.
 
 \section{Conclusion}
 
-We developed a forecast-calibrated charger MPC that preserves individual
-session feasibility, carries monthly demand peaks correctly, and produces a
-fully causal Q3 comparison.  In the six-port pilot, conformal robustness
-reduces cost relative to immediate charging and modestly improves on the causal
-point forecast while retaining zero unserved energy.  Exact EV/charger
-invariance and density-dependent scaling are independently verified.  The
-mathematical and computational foundations are paper-ready; the empirical claim
-remains preliminary until replicated across more cohorts and seasons.
+We separated individual-EV and physical-charger prediction into two auditable
+tasks and compared them on exactly the same sessions.  Across common advanced
+architectures, charger resolution substantially reduces aggregate daily energy
+error, while the full-demand analysis exposes the additional open-set coverage
+burden of driver-specific prediction.  We also developed a
+forecast-calibrated charger MPC that preserves individual-session feasibility
+and carries monthly demand peaks correctly.  In the six-port control pilot,
+conformal robustness reduces cost relative to immediate charging and modestly
+improves on the causal point forecast with zero unserved energy.  Exact
+EV/charger optimization invariance and density-dependent scaling are
+independently verified.  The combined evidence supports charger resolution as
+a promising prediction-and-control abstraction, but the causal link from
+advanced forecast improvement to economic value remains preliminary until the
+new forecasts are calibrated, reconstructed, and run through MPC across more
+cohorts and seasons.
 
 \section*{Reproducibility statement}
 
 Source code, compact result tables, experiment commands, generated figures, and
 this manuscript are version controlled.  The raw and processed charging tables
-are excluded from Git because of size and data-use restrictions.  The Q3 runner
-uses a fixed cohort, chronological calibration, validation, and test windows,
-daily checkpoints, and hard failures for unserved energy, solver fallback, or
-invalid physical overlap.
+are excluded from Git because of size and data-use restrictions.  Forecast
+cohort selection, scaling, graph construction, and early stopping are
+chronological.  The MPC runner uses a fixed port cohort, chronological
+calibration/validation/test windows, daily checkpoints, and hard failures for
+unserved energy, solver fallback, or invalid physical overlap.
 
 \section*{Data availability}
 
@@ -559,6 +885,12 @@ completed before submission.
 \toprule
 Component & Equations & Implementation invariant \\
 \midrule
+Matched forecasting & \eqref{eq:paneltarget}--\eqref{eq:matchedloss} &
+training-only driver cohort and exact daily energy identity \\
+Operational scope & \eqref{eq:nosub}--\eqref{eq:opwape} & known-driver error
+and unidentified demand cannot cancel \\
+Advanced models & \eqref{eq:forecastloss}--\eqref{eq:graphforecast} &
+training-only scaling/adjacency, fixed split, deterministic seeds \\
 Session feasibility & \eqref{eq:evfeasible} & validation, exact energy equality,
 and availability bounds \\
 Charger projection & \eqref{eq:upper}--\eqref{eq:charger} & nonoverlap assertion,
@@ -567,7 +899,7 @@ Monthly billing & \eqref{eq:peakstate}--\eqref{eq:cost} & executed peak carried
 day to day and reset only at month boundary \\
 Conformal correction & \eqref{eq:residuals}--\eqref{eq:robust} & finite-sample
 order statistic and capacity clipping \\
-Rolling information & Section 3.3 & arrived truth replaces future forecast;
+Rolling information & Section~\ref{sec:rolling} & arrived truth replaces future forecast;
 only connected actual load is executed \\
 Tie-breaking & \eqref{eq:lex} & primary HiGHS LP followed by a constrained
 secondary LP \\
@@ -578,7 +910,12 @@ secondary LP \\
 \section{Artifact commands}
 
 \begin{verbatim}
-PYTHONPATH=src /opt/homebrew/bin/python3 -m unittest discover -s tests -v
+MPLCONFIGDIR=/private/tmp/mpl-models PYTHONPATH=src \
+  .venv/bin/python -m unittest discover -s tests -v
+PYTHONPATH=src .venv/bin/python \
+  experiments/forecast_coverage_sensitivity.py
+MPLBACKEND=Agg MPLCONFIGDIR=/private/tmp/mpl-fair PYTHONPATH=src \
+  .venv/bin/python experiments/make_fair_forecast_artifacts.py
 bash experiments/run_paper_protocol.sh
 \end{verbatim}
 

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import LogisticRegression, Ridge
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -53,6 +53,7 @@ FIXED_CHARGERS = (
 ENTITY_MODELS = (
     "SeasonalNaive",
     "Ridge",
+    "HurdleRidge",
     "DLinear",
     "LSTM",
     "TCN",
@@ -77,8 +78,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--validation-end", default="2023-06-30")
     parser.add_argument("--test-end", default="2023-09-30")
     parser.add_argument("--context-length", type=int, default=28)
-    parser.add_argument("--ev-top-k", type=int, default=128)
-    parser.add_argument("--ev-minimum-sessions", type=int, default=12)
+    parser.add_argument("--ev-top-k", type=int, default=512)
+    parser.add_argument("--ev-minimum-sessions", type=int, default=3)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
@@ -304,6 +305,58 @@ def _ridge_prediction(
     return prediction
 
 
+def _hurdle_ridge_prediction(
+    train_arrays: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    test_arrays: tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray],
+    scaler: PanelScaler,
+    *,
+    seed: int,
+) -> np.ndarray:
+    """Two-stage participation and conditional-attribute regression."""
+
+    train_x, train_y, train_calendar, train_mask = train_arrays
+    test_x, _, test_calendar, _ = test_arrays
+    design = np.concatenate(
+        (train_x.reshape(len(train_x), -1), train_calendar),
+        axis=1,
+    )
+    test_design = np.concatenate(
+        (test_x.reshape(len(test_x), -1), test_calendar),
+        axis=1,
+    )
+    active = train_mask[:, 2] > 0.0
+    if active.all():
+        probability = np.ones(len(test_x), dtype=np.float32)
+    elif not active.any():
+        probability = np.zeros(len(test_x), dtype=np.float32)
+    else:
+        classifier = LogisticRegression(
+            C=1.0,
+            class_weight="balanced",
+            max_iter=1000,
+            random_state=seed,
+        )
+        classifier.fit(design, active.astype(np.int8))
+        probability = classifier.predict_proba(test_design)[:, 1]
+
+    conditional_scaled = np.zeros(
+        (len(test_x), train_y.shape[1]),
+        dtype=np.float32,
+    )
+    if active.any():
+        for feature_idx in range(train_y.shape[1]):
+            model = Ridge(alpha=1.0)
+            model.fit(
+                design[active],
+                train_y[active, feature_idx],
+            )
+            conditional_scaled[:, feature_idx] = model.predict(test_design)
+    conditional_raw = scaler.inverse_transform(conditional_scaled)
+    conditional_raw[:, 0:2] *= probability[:, None]
+    conditional_raw[probability < 0.5, 2:] = 0.0
+    return conditional_raw
+
+
 def _model(
     name: str,
     *,
@@ -347,6 +400,38 @@ def _portable_path(path: Path) -> str:
         return str(path)
 
 
+def _daily_energy_records(
+    *,
+    task: str,
+    model: str,
+    dates: list[str],
+    actual: np.ndarray,
+    prediction: np.ndarray,
+    seed: int,
+) -> list[dict]:
+    actual_energy = actual[..., 1].sum(axis=1)
+    predicted_energy = prediction[..., 1].sum(axis=1)
+    return [
+        {
+            "date": day,
+            "task": task,
+            "model": model,
+            "actual_scope_energy_kwh": float(observed),
+            "predicted_scope_energy_kwh": float(predicted),
+            "absolute_scope_error_kwh": float(abs(observed - predicted)),
+            "full_actual_energy_kwh": math.nan,
+            "unmodelled_energy_kwh": math.nan,
+            "no_substitution_operational_error_kwh": math.nan,
+            "seed": seed,
+        }
+        for day, observed, predicted in zip(
+            dates,
+            actual_energy,
+            predicted_energy,
+        )
+    ]
+
+
 def main() -> None:
     args = parse_args()
     if args.context_length < 7:
@@ -359,18 +444,29 @@ def main() -> None:
 
     set_deterministic_seed(args.seed)
     torch.set_num_threads(1)
+    ev_panel = build_daily_panel(
+        args.data,
+        level="ev",
+        start=args.panel_start,
+        end=args.test_end,
+        selection_end=args.train_end,
+        top_k=args.ev_top_k,
+        minimum_sessions=args.ev_minimum_sessions,
+        charger_filter=FIXED_CHARGERS,
+    )
     panels = {
-        "EV": build_daily_panel(
+        "EV": ev_panel,
+        "ChargerMatched": build_daily_panel(
             args.data,
-            level="ev",
+            level="charger",
             start=args.panel_start,
             end=args.test_end,
             selection_end=args.train_end,
-            top_k=args.ev_top_k,
-            minimum_sessions=args.ev_minimum_sessions,
+            entity_ids=FIXED_CHARGERS,
             charger_filter=FIXED_CHARGERS,
+            driver_filter=ev_panel.entity_ids,
         ),
-        "Charger": build_daily_panel(
+        "ChargerFull": build_daily_panel(
             args.data,
             level="charger",
             start=args.panel_start,
@@ -380,9 +476,21 @@ def main() -> None:
             charger_filter=FIXED_CHARGERS,
         ),
     }
+    np.testing.assert_allclose(
+        panels["EV"].values[..., 1].sum(axis=1),
+        panels["ChargerMatched"].values[..., 1].sum(axis=1),
+        atol=1e-4,
+        err_msg="matched EV and charger scopes contain different energy",
+    )
     rows: list[dict] = []
-    charger_test_energy = math.nan
-    ev_test_energy = math.nan
+    daily_rows: list[dict] = []
+    task_test_energy: dict[str, float] = {}
+    predictions_by_task_model: dict[
+        tuple[str, str],
+        tuple[list[str], np.ndarray],
+    ] = {}
+    full_actual_by_date: dict[str, float] = {}
+    actual_energy_by_task_date: dict[str, dict[str, float]] = {}
 
     for task, panel in panels.items():
         train_indices = _indices(
@@ -433,10 +541,15 @@ def main() -> None:
         )
         test_dates = [panel.dates[idx] for idx in test_indices]
         test_actual = panel.values[test_indices]
-        if task == "Charger":
-            charger_test_energy = float(test_actual[..., 1].sum())
-        else:
-            ev_test_energy = float(test_actual[..., 1].sum())
+        task_test_energy[task] = float(test_actual[..., 1].sum())
+        actual_energy_by_task_date[task] = dict(
+            zip(
+                test_dates,
+                test_actual[..., 1].sum(axis=1).astype(float),
+            )
+        )
+        if task == "ChargerFull":
+            full_actual_by_date = actual_energy_by_task_date[task]
 
         for name in args.models:
             if name == "GraphGNN":
@@ -459,7 +572,17 @@ def main() -> None:
                 prediction = scaler.inverse_transform(
                     prediction_scaled.reshape(test_actual.shape)
                 )
+            elif name == "HurdleRidge":
+                prediction = _hurdle_ridge_prediction(
+                    train_arrays,
+                    test_arrays,
+                    scaler,
+                    seed=args.seed,
+                ).reshape(test_actual.shape)
             else:
+                set_deterministic_seed(
+                    args.seed + 100 * ENTITY_MODELS.index(name)
+                )
                 model = _model(
                     name,
                     context=args.context_length,
@@ -499,7 +622,14 @@ def main() -> None:
                     "validation_target_days": len(validation_indices),
                     "test_target_days": len(test_indices),
                     "context_days": args.context_length,
+                    "comparison_scope": (
+                        "matched_recurring_ev"
+                        if task != "ChargerFull"
+                        else "full_six_charger"
+                    ),
                     "scope_energy_coverage": math.nan,
+                    "operational_daily_energy_mae_kwh": math.nan,
+                    "operational_daily_energy_wape": math.nan,
                     **metrics,
                     "validation_masked_mse": validation_loss,
                     "parameter_count": parameter_count,
@@ -507,8 +637,22 @@ def main() -> None:
                     "seed": args.seed,
                 }
             )
+            daily_rows.extend(
+                _daily_energy_records(
+                    task=task,
+                    model=name,
+                    dates=test_dates,
+                    actual=test_actual,
+                    prediction=prediction,
+                    seed=args.seed,
+                )
+            )
+            predictions_by_task_model[(task, name)] = (
+                test_dates,
+                prediction[..., 1].sum(axis=1),
+            )
 
-        if task == "Charger" and "GraphGNN" in args.models:
+        if task.startswith("Charger") and "GraphGNN" in args.models:
             started = time.perf_counter()
             adjacency = correlation_adjacency(
                 panel.values[train_day_mask],
@@ -536,6 +680,7 @@ def main() -> None:
                 test_indices,
                 args.context_length,
             )
+            set_deterministic_seed(args.seed + 1000)
             model = GraphTemporalRegressor(
                 panel.values.shape[2],
                 adjacency,
@@ -572,7 +717,14 @@ def main() -> None:
                     "validation_target_days": len(validation_indices),
                     "test_target_days": len(test_indices),
                     "context_days": args.context_length,
-                    "scope_energy_coverage": 1.0,
+                    "comparison_scope": (
+                        "matched_recurring_ev"
+                        if task == "ChargerMatched"
+                        else "full_six_charger"
+                    ),
+                    "scope_energy_coverage": math.nan,
+                    "operational_daily_energy_mae_kwh": math.nan,
+                    "operational_daily_energy_wape": math.nan,
                     **metrics,
                     "validation_masked_mse": validation_loss,
                     "parameter_count": parameter_count,
@@ -580,17 +732,72 @@ def main() -> None:
                     "seed": args.seed,
                 }
             )
+            daily_rows.extend(
+                _daily_energy_records(
+                    task=task,
+                    model="GraphGNN",
+                    dates=test_dates,
+                    actual=test_actual,
+                    prediction=prediction,
+                    seed=args.seed,
+                )
+            )
+            predictions_by_task_model[(task, "GraphGNN")] = (
+                test_dates,
+                prediction[..., 1].sum(axis=1),
+            )
 
-    coverage = (
-        ev_test_energy / charger_test_energy
-        if charger_test_energy > 0.0
-        else math.nan
-    )
+    full_energy = task_test_energy["ChargerFull"]
     for row in rows:
+        task = row["task"]
         row["scope_energy_coverage"] = (
-            coverage if row["task"] == "EV" else 1.0
+            task_test_energy[task] / full_energy
+            if full_energy > 0.0
+            else math.nan
         )
+        if task == "ChargerFull":
+            row["operational_daily_energy_mae_kwh"] = row[
+                "aggregate_daily_energy_mae_kwh"
+            ]
+            row["operational_daily_energy_wape"] = row[
+                "aggregate_daily_energy_wape"
+            ]
+        elif task == "EV":
+            dates, predicted = predictions_by_task_model[
+                (task, row["model"])
+            ]
+            matched_actual = np.asarray(
+                [
+                    actual_energy_by_task_date["EV"][day]
+                    for day in dates
+                ],
+                dtype=np.float64,
+            )
+            full_actual = np.asarray(
+                [full_actual_by_date[day] for day in dates],
+                dtype=np.float64,
+            )
+            unmodelled = np.maximum(0.0, full_actual - matched_actual)
+            error = np.abs(matched_actual - predicted) + unmodelled
+            row["operational_daily_energy_mae_kwh"] = float(error.mean())
+            row["operational_daily_energy_wape"] = float(
+                error.sum() / max(1e-9, full_actual.sum())
+            )
+    for daily in daily_rows:
+        full_actual = full_actual_by_date[daily["date"]]
+        daily["full_actual_energy_kwh"] = full_actual
+        if daily["task"] == "EV":
+            unmodelled = max(
+                0.0,
+                full_actual - daily["actual_scope_energy_kwh"],
+            )
+            daily["unmodelled_energy_kwh"] = unmodelled
+            daily["no_substitution_operational_error_kwh"] = (
+                daily["absolute_scope_error_kwh"] + unmodelled
+            )
     _write_csv(args.output, rows)
+    daily_output = args.output.with_name("daily_predictions.csv")
+    _write_csv(daily_output, daily_rows)
     metadata = {
         "status": "quick_sanity" if args.quick else "full_forecast_only",
         "data": _portable_path(args.data),
@@ -610,9 +817,12 @@ def main() -> None:
             "into feasible sessions or evaluated in MPC."
         ),
         "coverage_warning": (
-            "EV metrics are conditional on the training-selected recurrent "
-            "driver cohort. Compare tasks only with scope coverage visible."
+            "EV and ChargerMatched contain exactly the same sessions. "
+            "ChargerFull covers all six-charger demand. Operational EV error "
+            "adds matched-scope absolute error and unmodelled demand without "
+            "allowing overprediction of one driver to replace another."
         ),
+        "daily_predictions": _portable_path(daily_output),
     }
     args.output.with_suffix(".json").write_text(
         json.dumps(metadata, indent=2) + "\n"
@@ -620,7 +830,7 @@ def main() -> None:
     print("advanced forecast benchmark")
     for row in rows:
         print(
-            f"{row['task']:7s} {row['model']:13s} "
+            f"{row['task']:15s} {row['model']:13s} "
             f"energy-MAE={row['energy_mae_kwh']:.3f} "
             f"aggregate-day-MAE="
             f"{row['aggregate_daily_energy_mae_kwh']:.3f} "
@@ -628,6 +838,7 @@ def main() -> None:
             flush=True,
         )
     print("output:", args.output)
+    print("daily:", daily_output)
 
 
 if __name__ == "__main__":

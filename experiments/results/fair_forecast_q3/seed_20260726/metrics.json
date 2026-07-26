@@ -1,10 +1,10 @@
 {
-  "status": "quick_sanity",
+  "status": "full_forecast_only",
   "data": "data/processed/clean_charging_sessions_enhanced.csv",
   "panel_start": "2022-01-01",
   "train_end": "2023-03-31",
   "validation_end": "2023-06-30",
-  "test_end": "2023-07-07",
+  "test_end": "2023-09-30",
   "fixed_chargers": [
     "UCSD / GILMAN 2-2|2",
     "UCSD / SCHOLARS - 07|2",
@@ -13,7 +13,7 @@
     "UCSD / SCHOLARS - 01|1",
     "UCSD / SCHOLARS - 08|2"
   ],
-  "ev_top_k": 24,
+  "ev_top_k": 512,
   "ev_minimum_sessions": 3,
   "target_features": [
     "session_count",
@@ -32,9 +32,9 @@
     "iTransformer",
     "GraphGNN"
   ],
-  "epochs": 3,
+  "epochs": 10,
   "seed": 20260726,
   "important_boundary": "Forecast-only benchmark; predictions are not yet reconstructed into feasible sessions or evaluated in MPC.",
   "coverage_warning": "EV and ChargerMatched contain exactly the same sessions. ChargerFull covers all six-charger demand. Operational EV error adds matched-scope absolute error and unmodelled demand without allowing overprediction of one driver to replace another.",
-  "daily_predictions": "experiments/results/advanced_forecast_quick/daily_predictions.csv"
+  "daily_predictions": "experiments/results/fair_forecast_q3/seed_20260726/daily_predictions.csv"
 }
