@@ -10,6 +10,7 @@ from charger_mpc import (
     Session,
     Tariff,
     disaggregate_nonoverlap,
+    evaluate_incremental_cost,
     rolling_charger_mpc,
     solve_charger_envelope,
     solve_charger_total_energy_relaxation,
@@ -27,6 +28,62 @@ def test_tariff(prices: tuple[float, ...]) -> Tariff:
 
 
 class ChargerEnvelopeTests(unittest.TestCase):
+    def test_incremental_cost_charges_only_new_monthly_peak(self) -> None:
+        tariff = Tariff(
+            energy_price_per_kwh=(0.0, 0.0, 0.0, 0.0),
+            demand_charge_all_per_kw=2.0,
+            demand_charge_onpeak_per_kw=3.0,
+            onpeak_slots=frozenset({3, 4}),
+        )
+
+        below_cost, _, below_peak, below_onpeak = evaluate_incremental_cost(
+            (3.0, 3.0, 1.0, 1.0),
+            tariff,
+            delta_t=1.0,
+            prior_peak_kw=4.0,
+            prior_onpeak_peak_kw=2.0,
+        )
+        above_cost, _, above_peak, above_onpeak = evaluate_incremental_cost(
+            (5.0, 1.0, 4.0, 1.0),
+            tariff,
+            delta_t=1.0,
+            prior_peak_kw=4.0,
+            prior_onpeak_peak_kw=2.0,
+        )
+
+        self.assertAlmostEqual(below_cost, 0.0)
+        self.assertAlmostEqual(below_peak, 4.0)
+        self.assertAlmostEqual(below_onpeak, 2.0)
+        self.assertAlmostEqual(above_cost, 8.0)
+        self.assertAlmostEqual(above_peak, 5.0)
+        self.assertAlmostEqual(above_onpeak, 4.0)
+
+    def test_sequential_incremental_costs_equal_one_month_bill(self) -> None:
+        tariff = Tariff(
+            energy_price_per_kwh=(1.0, 1.0, 1.0, 1.0),
+            demand_charge_all_per_kw=2.0,
+            demand_charge_onpeak_per_kw=3.0,
+            onpeak_slots=frozenset({3, 4}),
+        )
+
+        day_one_cost, _, peak, onpeak_peak = evaluate_incremental_cost(
+            (4.0, 0.0, 2.0, 0.0),
+            tariff,
+            delta_t=1.0,
+        )
+        day_two_cost, _, peak, onpeak_peak = evaluate_incremental_cost(
+            (1.0, 0.0, 3.0, 0.0),
+            tariff,
+            delta_t=1.0,
+            prior_peak_kw=peak,
+            prior_onpeak_peak_kw=onpeak_peak,
+        )
+
+        expected_month_bill = 10.0 + 2.0 * 4.0 + 3.0 * 3.0
+        self.assertAlmostEqual(day_one_cost + day_two_cost, expected_month_bill)
+        self.assertAlmostEqual(peak, 4.0)
+        self.assertAlmostEqual(onpeak_peak, 3.0)
+
     def test_exact_charger_projection_matches_ev_optimum(self) -> None:
         sessions = [
             Session("a1", "A", 1, 2, 1.5, max_power_kw=1.0),
@@ -152,6 +209,35 @@ class ChargerEnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(noforecast.unserved_energy_kwh, 0.0)
         self.assertEqual(perfect.fallback_count, 0)
         self.assertEqual(noforecast.fallback_count, 0)
+
+    def test_rolling_carries_month_to_date_peak_without_recharging_it(
+        self,
+    ) -> None:
+        sessions = [
+            Session("a", "A", 1, 2, 1.0, max_power_kw=1.0),
+        ]
+        tariff = Tariff(
+            energy_price_per_kwh=(0.0, 0.0),
+            demand_charge_all_per_kw=2.0,
+            demand_charge_onpeak_per_kw=3.0,
+            onpeak_slots=frozenset({1, 2}),
+        )
+
+        result = rolling_charger_mpc(
+            sessions,
+            [],
+            tariff,
+            method="NoForecast",
+            delta_t=1.0,
+            prior_peak_kw=4.0,
+            prior_onpeak_peak_kw=3.0,
+        )
+
+        self.assertAlmostEqual(result.energy_kwh, 1.0)
+        self.assertAlmostEqual(result.unserved_energy_kwh, 0.0)
+        self.assertAlmostEqual(result.cost, 0.0)
+        self.assertAlmostEqual(result.peak_kw, 4.0)
+        self.assertAlmostEqual(result.onpeak_peak_kw, 3.0)
 
 
 if __name__ == "__main__":

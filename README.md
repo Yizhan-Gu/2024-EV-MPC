@@ -23,10 +23,10 @@ peak-demand cost calculation, and forecast/control performance comparisons.
 ## Validation status
 
 The deterministic reference core passes the current unit and smoke tests.
-Three independent six-charger runs are summarized in
-`experiments/results/README.md`. They are controller checks rather than
-publication results and still apply monthly demand-charge rates to isolated
-days.
+A continuous three-day, six-charger experiment now carries each method's
+executed month-to-date peak across days and charges only incremental demand
+cost. Results are summarized in `experiments/results/README.md`. The short
+horizon remains a controller check rather than a publication result.
 
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
@@ -57,6 +57,14 @@ Small six-charger smoke experiment:
   --time-limit 1.0
 ```
 
-The one-day smoke test applies monthly demand-charge rates to one isolated day
-only as a controller check. Publication experiments must carry the executed
-monthly peak state across consecutive days.
+Continuous three-day billing experiment:
+
+```bash
+/opt/homebrew/bin/python3 experiments/continuous_3day_mpc.py \
+  --chargers 6 \
+  --time-limit 1.0
+```
+
+The one-day script intentionally retains the isolated-day billing proxy for
+regression diagnostics. The continuous script is the valid starting point for
+longer controller and forecast comparisons.

@@ -622,13 +622,47 @@ def evaluate_cost(
     return float(cost), energy_kwh, peak, onpeak_peak
 
 
+def evaluate_incremental_cost(
+    load_kw: Sequence[float],
+    tariff: Tariff,
+    *,
+    delta_t: float = 0.25,
+    prior_peak_kw: float = 0.0,
+    prior_onpeak_peak_kw: float = 0.0,
+) -> tuple[float, float, float, float]:
+    """Evaluate one day's incremental contribution to a monthly bill.
+
+    Energy charges are always incremental. Demand charges include only the
+    increase above the executed month-to-date peak supplied by the caller.
+    The returned peaks are the updated states to carry into the next day.
+    """
+
+    prior_peak = max(0.0, float(prior_peak_kw))
+    prior_onpeak_peak = max(0.0, float(prior_onpeak_peak_kw))
+    total_cost, energy_kwh, peak, onpeak_peak = evaluate_cost(
+        load_kw,
+        tariff,
+        delta_t=delta_t,
+        prior_peak_kw=prior_peak,
+        prior_onpeak_peak_kw=prior_onpeak_peak,
+    )
+    prior_demand_cost = (1.0 + tariff.other_fraction) * (
+        tariff.demand_charge_all_per_kw * prior_peak
+        + tariff.demand_charge_onpeak_per_kw * prior_onpeak_peak
+    )
+    incremental_cost = total_cost - prior_demand_cost
+    return float(incremental_cost), energy_kwh, peak, onpeak_peak
+
+
 def v0g_dispatch(
     sessions: Iterable[Session],
     tariff: Tariff,
     *,
     delta_t: float = 0.25,
+    prior_peak_kw: float = 0.0,
+    prior_onpeak_peak_kw: float = 0.0,
 ) -> RollingResult:
-    """Execute immediate max-power charging on each physical charger."""
+    """Execute immediate charging and return its incremental billing cost."""
 
     session_list = list(sessions)
     _validate_inputs(session_list, tariff, delta_t)
@@ -646,10 +680,12 @@ def v0g_dispatch(
                 remaining = 0.0
                 break
         unserved += max(0.0, remaining)
-    cost, energy, peak, onpeak_peak = evaluate_cost(
+    cost, energy, peak, onpeak_peak = evaluate_incremental_cost(
         load,
         tariff,
         delta_t=delta_t,
+        prior_peak_kw=prior_peak_kw,
+        prior_onpeak_peak_kw=prior_onpeak_peak_kw,
     )
     required = float(sum(x.energy_kwh for x in session_list))
     return RollingResult(
@@ -703,12 +739,17 @@ def rolling_charger_mpc(
     method: str,
     delta_t: float = 0.25,
     time_limit_per_solve: float = 1.0,
+    prior_peak_kw: float = 0.0,
+    prior_onpeak_peak_kw: float = 0.0,
 ) -> RollingResult:
     """Execute receding-horizon charger MPC against actual arrivals.
 
     Once a session arrives, its true energy and departure are assumed known.
     Forecast sessions are used only while their arrival remains in the future.
     Planned power is executed only when a real EV is physically connected.
+    Prior peaks are executed month-to-date states. ``cost`` reports only this
+    day's incremental contribution to the bill, while returned peaks are the
+    updated states for the following day.
     """
 
     actual = list(actual_sessions)
@@ -722,8 +763,10 @@ def rolling_charger_mpc(
 
     delivered = {session.session_id: 0.0 for session in actual}
     load = np.zeros(tariff.n_slots, dtype=float)
-    prior_peak = 0.0
-    prior_onpeak_peak = 0.0
+    initial_peak = max(0.0, float(prior_peak_kw))
+    initial_onpeak_peak = max(0.0, float(prior_onpeak_peak_kw))
+    prior_peak = initial_peak
+    prior_onpeak_peak = initial_onpeak_peak
     solve_count = 0
     optimal_count = 0
     fallback_count = 0
@@ -811,10 +854,12 @@ def rolling_charger_mpc(
     required = float(sum(session.energy_kwh for session in actual))
     served = float(sum(delivered.values()))
     unserved = max(0.0, required - served)
-    cost, energy, peak, onpeak_peak = evaluate_cost(
+    cost, energy, peak, onpeak_peak = evaluate_incremental_cost(
         load,
         tariff,
         delta_t=delta_t,
+        prior_peak_kw=initial_peak,
+        prior_onpeak_peak_kw=initial_onpeak_peak,
     )
     return RollingResult(
         method=method,
