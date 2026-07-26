@@ -1,0 +1,4 @@
+method,count_mae_per_charger_day,arrival_mae_slots,departure_mae_slots,energy_mae_kwh,matched_session_count,actual_session_count,forecast_session_count,arrival_upper_coverage,departure_lower_coverage,energy_upper_coverage
+Persistence,1.2166666666666666,12.53125,14.1328125,7.11766796875,256.0,341.0,390.0,nan,nan,nan
+HistoricalMedian,1.1888888888888889,9.942567567567568,11.39527027027027,6.592731418918919,296.0,341.0,465.0,0.8648648648648649,0.9054054054054054,0.8986486486486487
+ConformalRobust,1.1888888888888889,16.756756756756758,12.236486486486486,9.210229729729729,296.0,341.0,465.0,nan,nan,nan

@@ -16,6 +16,18 @@ archive/unvalidated_2026_copilot_pipeline/pipeline/figures/**
 archive/unvalidated_2026_copilot_pipeline/pipeline/models/**
 archive/unvalidated_2026_copilot_pipeline/pipeline/tables/**
 archive/unvalidated_2026_copilot_pipeline/pipeline/optimization_results.csv
+archive/paper_development_runs/**
+!archive/paper_development_runs/NOTICE.md
+
+# Generated LaTeX and visual-QA intermediates. Keep the final PDF.
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fdb_latexmk
+paper/*.fls
+paper/*.log
+paper/*.out
+tmp/**
 
 # Local editor/session state.
 .Rhistory

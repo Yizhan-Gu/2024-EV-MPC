@@ -22,11 +22,18 @@ peak-demand cost calculation, and forecast/control performance comparisons.
 
 ## Validation status
 
-The deterministic reference core passes the current unit and smoke tests.
-A continuous three-day, six-charger experiment now carries each method's
-executed month-to-date peak across days and charges only incremental demand
-cost. Results are summarized in `experiments/results/README.md`. The short
-horizon remains a controller check rather than a publication result.
+The deterministic reference core passes the current unit and smoke tests. The
+paper protocol now adds causal historical-median and one-sided conformal
+forecasts, exact sparse charger envelopes, continuous executed monthly peak
+states, a chronological June validation, and a July--September 2023
+out-of-sample pilot. All 552 Q3 day--method runs serve the required energy
+without fallback.
+
+The current six-port pilot finds a 28.23% conformal-MPC cost saving relative to
+immediate charging and a 1.47% reduction relative to point-forecast MPC.
+Because only three billing months are tested, this is a reproducible pilot and
+not yet a statistically generalizable publication claim. The complete draft,
+formula audit, figures, and commands are under `paper/`.
 
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
@@ -68,3 +75,15 @@ Continuous three-day billing experiment:
 The one-day script intentionally retains the isolated-day billing proxy for
 regression diagnostics. The continuous script is the valid starting point for
 longer controller and forecast comparisons.
+
+## Paper-level protocol
+
+Run the full frozen protocol (local processed data required):
+
+```bash
+bash experiments/run_paper_protocol.sh
+```
+
+The compiled manuscript is `paper/main_segan.pdf`, with source in
+`paper/main_segan.tex`. Large source/session CSVs remain ignored; only compact
+audited experiment summaries are tracked.

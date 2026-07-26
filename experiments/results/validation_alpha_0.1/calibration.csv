@@ -1,0 +1,2 @@
+alpha,target_marginal_coverage,arrival_late_slots,departure_early_slots,energy_under_kwh,matched_residual_count,count_under_sessions,count_residual_count,calibration_start,calibration_end,lookback_weeks,charger_count,charger_ids,loaded_raw_sessions,loaded_kept_sessions
+0.1,0.9,15,19,13.268,693,2,366,2023-04-01,2023-05-31,4,6,UCSD / GILMAN 2-2|2;UCSD / SCHOLARS - 07|2;UCSD / RADY P357 5|2;UCSD / BIRCH AQUARIUM|1;UCSD / SCHOLARS - 01|1;UCSD / SCHOLARS - 08|2,23597,23251

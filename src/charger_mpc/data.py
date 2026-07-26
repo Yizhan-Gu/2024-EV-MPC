@@ -30,12 +30,38 @@ def read_day_sessions(
 ) -> tuple[list[Session], dict[str, int]]:
     """Read, discretize, and feasibility-filter one day without pandas."""
 
-    sessions: list[Session] = []
-    stats = Counter()
+    sessions_by_day, stats_by_day = read_sessions_by_days(
+        path,
+        [day],
+        charger_ids=charger_ids,
+        delta_t=delta_t,
+        max_power_kw=max_power_kw,
+    )
+    return sessions_by_day[day], stats_by_day[day]
+
+
+def read_sessions_by_days(
+    path: str | Path,
+    days: Iterable[str],
+    *,
+    charger_ids: set[str] | None = None,
+    delta_t: float = 0.25,
+    max_power_kw: float = 6.6,
+) -> tuple[dict[str, list[Session]], dict[str, dict[str, int]]]:
+    """Read multiple dates in one CSV pass using the day-level policy."""
+
+    requested_days = tuple(dict.fromkeys(days))
+    requested_set = set(requested_days)
+    sessions_by_day: dict[str, list[Session]] = {
+        day: [] for day in requested_days
+    }
+    counters = {day: Counter() for day in requested_days}
     with Path(path).open(newline="") as handle:
         for row_idx, row in enumerate(csv.DictReader(handle), start=2):
-            if row["session_start_time_la"][:10] != day:
+            day = row["session_start_time_la"][:10]
+            if day not in requested_set:
                 continue
+            stats = counters[day]
             stats["raw"] += 1
             charger_id = f"{row['station_name']}|{row['port']}"
             if charger_ids is not None and charger_id not in charger_ids:
@@ -56,7 +82,7 @@ def read_day_sessions(
             if energy <= 0.0 or energy > capacity + 1e-9:
                 stats["infeasible_energy"] += 1
                 continue
-            sessions.append(
+            sessions_by_day[day].append(
                 Session(
                     session_id=f"{day}:{row_idx}",
                     charger_id=charger_id,
@@ -67,10 +93,19 @@ def read_day_sessions(
                 )
             )
             stats["kept"] += 1
-    sessions.sort(
-        key=lambda x: (x.charger_id, x.arrival, x.departure, x.session_id)
+    for sessions in sessions_by_day.values():
+        sessions.sort(
+            key=lambda x: (
+                x.charger_id,
+                x.arrival,
+                x.departure,
+                x.session_id,
+            )
+        )
+    return (
+        sessions_by_day,
+        {day: dict(counters[day]) for day in requested_days},
     )
-    return sessions, dict(stats)
 
 
 def common_busy_chargers(

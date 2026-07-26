@@ -114,6 +114,11 @@ class ChargerEnvelopeTests(unittest.TestCase):
         self.assertAlmostEqual(ev.objective, charger.objective, places=7)
         self.assertAlmostEqual(ev.energy_kwh, 4.5, places=7)
         self.assertAlmostEqual(charger.energy_kwh, 4.5, places=7)
+        np.testing.assert_allclose(
+            ev.load_kw,
+            charger.load_kw,
+            atol=1e-6,
+        )
         for session in sessions:
             delivered = disaggregated[session.session_id].sum()
             self.assertAlmostEqual(

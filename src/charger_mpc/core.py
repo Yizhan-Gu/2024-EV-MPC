@@ -284,6 +284,70 @@ def _solve(
     return result
 
 
+def _temporal_tie_break_objective(
+    n_units: int,
+    n_slots: int,
+    n_variables: int,
+) -> np.ndarray:
+    """Prefer earlier aggregate power only after economic optimality."""
+
+    secondary = np.zeros(n_variables, dtype=float)
+    slot_weights = np.arange(1, n_slots + 1, dtype=float) / n_slots
+    for unit_idx in range(n_units):
+        offset = unit_idx * n_slots
+        secondary[offset : offset + n_slots] = slot_weights
+    return secondary
+
+
+def _solve_lexicographic(
+    objective: np.ndarray,
+    secondary_objective: np.ndarray,
+    bounds: Sequence[tuple[float, float | None]],
+    a_ub: lil_matrix,
+    b_ub: np.ndarray,
+    a_eq: lil_matrix | None,
+    b_eq: np.ndarray | None,
+    time_limit: float,
+) -> OptimizeResult:
+    """Solve economic cost first, then deterministically break optimal ties."""
+
+    primary = _solve(
+        objective,
+        bounds,
+        a_ub,
+        b_ub,
+        a_eq,
+        b_eq,
+        time_limit,
+    )
+    tolerance = max(1e-6, abs(float(primary.fun)) * 1e-7)
+    secondary_a_ub = lil_matrix(
+        (a_ub.shape[0] + 1, a_ub.shape[1]),
+        dtype=float,
+    )
+    secondary_a_ub[: a_ub.shape[0], :] = a_ub
+    nonzero = np.flatnonzero(np.abs(objective) > 0.0)
+    for column in nonzero:
+        secondary_a_ub[a_ub.shape[0], column] = objective[column]
+    secondary_b_ub = np.concatenate(
+        (b_ub, np.asarray([float(primary.fun) + tolerance])),
+    )
+    secondary = _solve(
+        secondary_objective,
+        bounds,
+        secondary_a_ub,
+        secondary_b_ub,
+        a_eq,
+        b_eq,
+        time_limit,
+    )
+    secondary.fun = float(np.dot(objective, secondary.x))
+    secondary.message = (
+        f"{primary.message}; deterministic lexicographic tie-break"
+    )
+    return secondary
+
+
 def solve_ev_dispatch(
     sessions: Iterable[Session],
     tariff: Tariff,
@@ -322,8 +386,13 @@ def solve_ev_dispatch(
         b_eq[session_idx] = session.energy_kwh
         power_bounds.append(unit_bounds)
 
-    result = _solve(
+    result = _solve_lexicographic(
         objective,
+        _temporal_tie_break_objective(
+            n_sessions,
+            n_slots,
+            len(objective),
+        ),
         _bounds(
             power_bounds,
             prior_peak_kw,
@@ -414,20 +483,39 @@ def solve_charger_envelope(
     n_chargers = len(charger_ids)
     n_slots = tariff.n_slots
     n_power = n_chargers * n_slots
-    objective = _objective_vector(n_chargers, tariff, delta_t)
-    peak_matrix, peak_rhs = _load_peak_constraints(n_chargers, tariff)
+    n_cumulative = n_power
+    n_variables = n_power + n_cumulative + 2
 
-    envelope_rows = 2 * n_chargers * n_slots
+    base_objective = _objective_vector(
+        n_chargers,
+        tariff,
+        delta_t,
+    )
+    objective = np.zeros(n_variables, dtype=float)
+    objective[:n_power] = base_objective[:n_power]
+    objective[-2:] = base_objective[-2:]
+
+    base_peak_matrix, peak_rhs = _load_peak_constraints(
+        n_chargers,
+        tariff,
+    )
     a_ub = lil_matrix(
-        (peak_matrix.shape[0] + envelope_rows, n_power + 2),
+        (base_peak_matrix.shape[0], n_variables),
         dtype=float,
     )
-    a_ub[: peak_matrix.shape[0], :] = peak_matrix
-    b_ub = np.zeros(a_ub.shape[0], dtype=float)
-    b_ub[: len(peak_rhs)] = peak_rhs
+    a_ub[:, :n_power] = base_peak_matrix[:, :n_power]
+    a_ub[:, -2] = base_peak_matrix[:, n_power]
+    a_ub[:, -1] = base_peak_matrix[:, n_power + 1]
+    b_ub = peak_rhs.copy()
+
+    a_eq = lil_matrix(
+        (n_chargers * n_slots, n_variables),
+        dtype=float,
+    )
+    b_eq = np.zeros(n_chargers * n_slots, dtype=float)
 
     power_bounds: list[list[tuple[float, float]]] = []
-    row = peak_matrix.shape[0]
+    cumulative_bounds: list[list[tuple[float, float]]] = []
     for charger_idx, charger_id in enumerate(charger_ids):
         lower, upper, charger_bounds = _charger_envelopes(
             grouped[charger_id],
@@ -435,26 +523,50 @@ def solve_charger_envelope(
             delta_t,
         )
         power_bounds.append(charger_bounds)
-        offset = charger_idx * n_slots
+        cumulative_bounds.append(
+            [
+                (float(lower[idx]), float(upper[idx]))
+                for idx in range(n_slots)
+            ]
+        )
+        power_offset = charger_idx * n_slots
+        cumulative_offset = n_power + charger_idx * n_slots
         for slot_idx in range(n_slots):
-            for prior_idx in range(slot_idx + 1):
-                a_ub[row, offset + prior_idx] = delta_t
-                a_ub[row + 1, offset + prior_idx] = -delta_t
-            b_ub[row] = upper[slot_idx]
-            b_ub[row + 1] = -lower[slot_idx]
-            row += 2
+            row = charger_idx * n_slots + slot_idx
+            a_eq[row, power_offset + slot_idx] = -delta_t
+            a_eq[row, cumulative_offset + slot_idx] = 1.0
+            if slot_idx:
+                a_eq[row, cumulative_offset + slot_idx - 1] = -1.0
 
-    result = _solve(
+    bounds = [
+        bound
+        for unit_bounds in power_bounds
+        for bound in unit_bounds
+    ]
+    bounds.extend(
+        bound
+        for unit_bounds in cumulative_bounds
+        for bound in unit_bounds
+    )
+    bounds.extend(
+        [
+            (max(0.0, prior_peak_kw), None),
+            (max(0.0, prior_onpeak_peak_kw), None),
+        ]
+    )
+
+    result = _solve_lexicographic(
         objective,
-        _bounds(
-            power_bounds,
-            prior_peak_kw,
-            prior_onpeak_peak_kw,
+        _temporal_tie_break_objective(
+            n_chargers,
+            n_slots,
+            len(objective),
         ),
+        bounds,
         a_ub,
         b_ub,
-        None,
-        None,
+        a_eq,
+        b_eq,
         time_limit,
     )
     return _result_from_solution(
@@ -741,6 +853,7 @@ def rolling_charger_mpc(
     time_limit_per_solve: float = 1.0,
     prior_peak_kw: float = 0.0,
     prior_onpeak_peak_kw: float = 0.0,
+    allow_fallback: bool = True,
 ) -> RollingResult:
     """Execute receding-horizon charger MPC against actual arrivals.
 
@@ -826,7 +939,11 @@ def rolling_charger_mpc(
                     charger_id: float(power[slot - 1])
                     for charger_id, power in plan.power_by_unit_kw.items()
                 }
-            except RuntimeError:
+            except RuntimeError as error:
+                if not allow_fallback:
+                    raise RuntimeError(
+                        f"{method} failed at slot {slot}: {error}"
+                    ) from error
                 fallback_count += 1
                 planned_now = {
                     charger_id: min(
