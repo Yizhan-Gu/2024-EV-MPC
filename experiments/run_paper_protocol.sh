@@ -6,6 +6,7 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PAPER_PYTHON="${PAPER_PYTHON:-/opt/homebrew/bin/python3}"
 PLOT_PYTHON="${PLOT_PYTHON:-python}"
 DATA_FILE="${PROJECT_ROOT}/data/processed/clean_charging_sessions_enhanced.csv"
+PAPER_BUILD_DIR="${TMPDIR:-/tmp}/ev_charger_paper_build"
 FIXED_CHARGERS="UCSD / GILMAN 2-2|2;UCSD / SCHOLARS - 07|2;UCSD / RADY P357 5|2;UCSD / BIRCH AQUARIUM|1;UCSD / SCHOLARS - 01|1;UCSD / SCHOLARS - 08|2"
 
 if [[ ! -f "${DATA_FILE}" ]]; then
@@ -54,7 +55,10 @@ done
 MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/charger-mpc-matplotlib}" \
   "${PLOT_PYTHON}" experiments/make_paper_artifacts.py
 
+mkdir -p "${PAPER_BUILD_DIR}"
 (
   cd paper
-  latexmk -pdf -interaction=nonstopmode -halt-on-error main_segan.tex
+  latexmk -pdf -interaction=nonstopmode -halt-on-error \
+    -outdir="${PAPER_BUILD_DIR}" main_segan.tex
 )
+cp "${PAPER_BUILD_DIR}/main_segan.pdf" paper/main_segan.pdf

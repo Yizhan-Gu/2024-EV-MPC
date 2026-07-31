@@ -227,7 +227,7 @@ def main() -> None:
                 "regret_pct_vs_perfect": aggregate_regret[method],
             }
         )
-    with (PAPER_ROOT / "results_summary.csv").open(
+    with (RESULT_ROOT / "paper_results_summary.csv").open(
         "w",
         newline="",
     ) as handle:

@@ -124,6 +124,9 @@ bash experiments/run_paper_protocol.sh
 The current Version 4 manuscript is `paper/main_segan_v4.pdf`, with source in
 `paper/main_segan.tex`. Versions 1--3 remain preserved. Large source/session
 CSVs remain ignored; only compact audited experiment summaries are tracked.
+Use `docs/PAPER_BUILD.md` for clean compilation commands; LaTeX intermediates
+are written outside `paper/`, which is reserved for manuscript sources,
+versioned PDFs, figures, tables, and the required bibliography.
 
 New advanced-model development defaults to July 1--31 to keep iterations
 small. The already completed Q3 outputs remain frozen paper evidence;

@@ -1,7 +1,7 @@
 # Research progress: EV versus charger forecasting and MPC
 
-Last verified: 2026-07-30 (Version 4 mathematics, model diagnostics, and
-paper-figure audit)
+Last verified: 2026-07-30 (Version 4 mathematics, model diagnostics,
+paper-figure audit, and clean paper build layout)
 
 This is the read-first handoff for future Codex sessions. Do not infer that a
 long experiment, reference-paper reproduction, or advanced-forecast/MPC
@@ -288,6 +288,20 @@ Development compute policy from Version 4 onward:
   rerun merely to update paper layout;
 - `run_paper_protocol.sh` retains explicit Q3 dates because it is the frozen
   full replication command, not the default development command.
+
+Paper-directory hygiene from this milestone onward:
+
+- `paper/` contains only manuscript `.tex`, versioned `.pdf`, the required
+  `references.bib`, and the `figures/` and `tables/` subdirectories;
+- build instructions moved to `docs/PAPER_BUILD.md`;
+- the aggregate controller CSV moved to
+  `experiments/results/paper_2023Q3/paper_results_summary.csv`, and its
+  generator now writes there;
+- `run_paper_protocol.sh` builds under
+  `${TMPDIR:-/tmp}/ev_charger_paper_build` and copies only the final PDF back,
+  so `.aux`, `.bbl`, `.blg`, `.fls`, `.log`, and `.out` files are not
+  recreated in `paper/`;
+- `.DS_Store` and prior local LaTeX intermediates were removed.
 
 Critical claim boundary: the advanced forecasts remain forecast-only. The
 28.23% V0G saving and 1.47% point-forecast improvement come from the separate
