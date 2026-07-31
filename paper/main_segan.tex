@@ -14,7 +14,7 @@
   linkcolor=blue,
   citecolor=blue,
   urlcolor=blue,
-  pdftitle={From Individual EVs to Physical Chargers: Leakage-Safe Forecasting and Model Predictive Control for Workplace Charging},
+  pdftitle={From Individual EVs to Physical Chargers: Physics-Constrained Flexibility Forecasting and Model Predictive Control},
   pdfauthor={Yizhan Gu}
 }
 \newtheorem{proposition}{Proposition}
@@ -25,13 +25,13 @@
 \newcommand{\pos}[1]{\left[#1\right]_{+}}
 \DeclareMathOperator*{\argmin}{arg\,min}
 
-\title{\textbf{From Individual EVs to Physical Chargers: Leakage-Safe
-Forecasting and Model Predictive Control for Workplace Charging}\\
+\title{\textbf{From Individual EVs to Physical Chargers:
+Physics-Constrained Flexibility Forecasting and Model Predictive Control}\\
 \large Matched-scope prediction, exact aggregation, and continuous
-demand-charge accounting}
+demand-charge accounting for workplace charging}
 \author{Yizhan Gu\\
 University of California San Diego, La Jolla, CA, USA}
-\date{Version 2 draft generated July 26, 2026\\
+\date{Version 3 draft generated July 30, 2026\\
 \small Target journal: \emph{Sustainable Energy, Grids and Networks}}
 
 \begin{document}
@@ -52,16 +52,24 @@ represents 29.77\% of full energy.  On this identical matched scope, charger
 aggregation reduces aggregate daily energy mean absolute error by 57.95\% for
 DLinear, 70.94\% for LSTM, 73.02\% for TCN, and 69.16\% for iTransformer,
 averaged over three seeds.  A seasonal-naive forecast is identical at both
-resolutions, providing an algebraic and numerical scope check.  We then derive
-a sparse charger-level linear program whose cumulative-energy envelopes are an
-exact projection of the session-level problem when sessions do not overlap on
-a physical port.  A separate forecast-calibrated MPC pilot carries executed
-demand peaks continuously through each billing month.  Across the same 92
-test days, conformal MPC costs \$4,177.90, 28.23\% below immediate charging and
-1.47\% below point-forecast MPC, with zero unserved energy.  The advanced
-forecasters have not yet been reconstructed into feasible sessions and coupled
-to MPC; consequently, their economic value remains a pre-registered next
-experiment rather than a result of this draft.
+resolutions, providing an algebraic and numerical scope check.  We further
+introduce a set-free flexibility signature comprising cumulative deliverable
+energy bounds and physical-port occupancy at six intraday anchors.  A
+differentiable output layer guarantees monotonicity, ordered bounds, terminal
+energy equality, and occupancy-limited capacity.  On the physically screened
+matched cohort, the physics-iTransformer charger model reduces terminal-energy,
+lower-envelope, and upper-envelope MAE by 69.19\%, 60.71\%, and 64.07\%
+relative to the same EV architecture; all paired block-bootstrap intervals
+exclude zero.  We then derive a sparse charger-level linear program whose
+cumulative-energy envelopes are an exact projection of the session-level
+problem when sessions do not overlap on a physical port.  A separate
+forecast-calibrated MPC pilot carries executed demand peaks continuously
+through each billing month.  Across the same 92 test days, conformal MPC costs
+\$4,177.90, 28.23\% below immediate charging and 1.47\% below point-forecast
+MPC, with zero unserved energy.  The new anchor signatures have not yet been
+lifted to full-resolution uncertainty sets and coupled to MPC; consequently,
+their economic value remains a pre-registered next experiment rather than a
+result of this draft.
 \end{abstract}
 
 \noindent\textbf{Keywords:} electric-vehicle charging; charger-based
@@ -101,6 +109,9 @@ Our contributions are:
   \item a common model ladder spanning seasonal naive, ridge, hurdle
   regression, DLinear, LSTM, TCN, iTransformer, and a charger graph-temporal
   regressor;
+  \item a session-matching-free flexibility target and differentiable physical
+  output layer that predicts cumulative energy bounds and port occupancy while
+  satisfying feasibility by construction;
   \item an exact sparse charger projection for nonoverlapping physical-port
   sessions, together with an explicit disaggregation argument;
   \item a rolling MPC implementation that carries executed billing-peak states
@@ -132,6 +143,16 @@ optimization can be competitive in small-data regimes
 experimental factor, not as the scientific contribution.
 
 \subsection{Spatio-temporal charging-demand forecasting}
+
+Hybrid ML has previously been used to forecast anonymous workplace-EV
+arrival, plug-duration, and energy attributes for online MPC
+\citep{mcclone2024hybrid}.  That work predicts a variable-cardinality
+individual-session set.  We do not reproduce its session assignment metric or
+historical-session retrieval procedure; our question is different: whether
+the physical charger is itself a statistically and operationally preferable
+prediction entity.  Accordingly, our primary targets are additive daily
+quantities and cumulative feasible-energy sets that can be compared without
+pairing forecasted and realized EVs.
 
 Graph WaveNet learns latent adjacency jointly with dilated temporal
 convolutions \citep{wu2019graphwavenet}, motivating graph models when charging
@@ -271,6 +292,77 @@ after averaging seed-specific losses by day.  A moving-block bootstrap with
 seven-day blocks and 5,000 resamples provides 95\% intervals; these intervals
 address short serial dependence but do not replace replication across sites
 or seasons.
+
+\subsection{Set-free flexibility-envelope target}
+\label{sec:flexforecast}
+
+Daily means in~\eqref{eq:paneltarget} do not fully describe when predicted
+energy can be delivered.  We therefore introduce an additive feasibility
+signature at anchor slots
+\[
+ \mathcal B=\{32,48,64,80,84,96\},
+\]
+corresponding to 08:00, 12:00, 16:00, 20:00, 21:00, and 24:00.  Let
+\(\tau_b\) be anchor \(b\), \(\tau_0=0\), and
+\(\mathcal K_b=\{\tau_{b-1}+1,\ldots,\tau_b\}\).  For session \(i\), the
+maximum energy deliverable by anchor \(b\) and minimum energy required by that
+anchor are
+\begin{align}
+ U_{i,b}
+ &=\min\!\left\{
+ E_i,\bar p_i\Delta t
+ \pos{\min(\tau_b,d_i)-a_i+1}
+ \right\},                                             \label{eq:forecastupper}\\
+ L_{i,b}
+ &=\max\!\left\{
+ 0,E_i-\bar p_i\Delta t
+ \pos{d_i-\max(\tau_b+1,a_i)+1}
+ \right\}.                                             \label{eq:forecastlower}
+\end{align}
+The occupied-port equivalent in block \(b\) is
+\begin{equation}
+ O_{i,b}=\frac{1}{|\mathcal K_b|}
+ \sum_{t\in\mathcal K_b}\mathbf 1\{a_i\le t\le d_i\}.   \label{eq:forecastoccupancy}
+\end{equation}
+For entity \(n\), the target
+\(\mathbf s_{t,n}=[\mathbf L_{t,n},\mathbf U_{t,n},
+\mathbf O_{t,n}]\) is obtained by summing
+\eqref{eq:forecastupper}--\eqref{eq:forecastoccupancy} over its sessions.
+Because every component is session-additive, the same-session identity
+extends beyond daily energy:
+\begin{equation}
+ \sum_{i\in\mathcal D_h}\mathbf s_{t,i}
+ =
+ \sum_{c\in\mathcal C}\mathbf s^{\mathrm{match}}_{t,c}.
+                                                               \label{eq:signatureidentity}
+\end{equation}
+No forecast-to-realized session assignment is needed.
+
+An unconstrained regressor can output decreasing cumulative energy, reversed
+bounds, or terminal energy exceeding predicted occupancy capacity.  The
+physics-iTransformer therefore maps latent occupancy values through
+\(\widehat O_b=\operatorname{sigmoid}(z^O_b)\), defines block capacity
+\(\widehat K_b=\bar p\Delta t|\mathcal K_b|\widehat O_b\), and bounds terminal
+energy by
+\begin{equation}
+ \widehat E=
+ \operatorname{sigmoid}(z^E)\sum_b\widehat K_b.         \label{eq:physicalenergy}
+\end{equation}
+Softmax increments create monotone preliminary lower and upper curves.  A
+differentiable cumulative map then enforces
+\begin{align}
+ 0&\le\widehat L_1\le\cdots\le\widehat L_B=\widehat E, \nonumber\\
+0&\le\widehat U_1\le\cdots\le\widehat U_B=\widehat E, \nonumber\\
+ \widehat L_b&\le\widehat U_b
+ \le\sum_{j\le b}\widehat K_j,\qquad
+ \widehat L_b\ge
+ \widehat E-\sum_{j>b}\widehat K_j.                    \label{eq:physicalcone}
+\end{align}
+Thus every network output belongs to the compressed feasibility cone during
+training and inference.  Active entity-days receive weight three, while zero
+days remain in the loss because absence is informative.  Primary errors are
+computed after summing signatures across entities: terminal-energy MAE and
+mean absolute lower- and upper-curve error across anchors.
 
 \section{Physical and tariff model}
 \subsection{Sets, data, and assumptions}
@@ -510,6 +602,18 @@ requires nonoverlap throughout the loaded evaluation window.  This screen uses
 test-period timestamps only to verify the structural assumption and does not
 use test costs, energy magnitudes for ranking, or controller outcomes.
 
+The flexibility-envelope experiment applies the physical screen consistently
+before training and evaluation.  Across January 2022--September 2023 on the
+six ports, 120 infeasible-energy records and seven invalid/overnight windows
+are removed.  Ninety-four overlapping port-days containing 474 records are
+excluded as structurally ambiguous, leaving 5,637 sessions.  The resulting
+training-only \(h=3\) cohort contains 314 drivers.  Its Q3 matched target is
+2,642.384 kWh, or 29.75\% of the physically screened full-demand total of
+8,880.536 kWh.  Q3 itself contains no overlapping port-days after the energy
+and window screen.  The target identity in~\eqref{eq:signatureidentity} is
+audited before every run; the maximum absolute discrepancy is
+\(4.58\times10^{-5}\) in float32 arithmetic.
+
 Hyperparameter selection is chronological.  Candidate
 \(\alpha\in\{0.1,0.2,0.3,0.4\}\) values use April--May residual calibration and
 June closed-loop validation.  After selecting \(\alpha=0.1\), the corrections
@@ -539,6 +643,15 @@ fails because rare-event class weighting can generate widespread small
 positive predictions across hundreds of inactive drivers.  GraphGNN is
 charger-only and is therefore reported for full-demand forecasting, not as a
 matched architecture pair.
+
+The flexibility experiment uses the same chronological windows and 28-day
+lookback.  Seasonal naive, unconstrained iTransformer followed by an explicitly
+reported projection diagnostic, and physics-iTransformer are evaluated.  The
+physics model uses three seeds and six maximum epochs selected after a
+seven-day smoke test; the unconstrained diagnostic and deterministic seasonal
+baseline use one run.  We report raw signature-validity rate and the mean
+absolute projection adjustment, so feasibility repair cannot be mistaken for
+native model accuracy.  The physics model requires no inference-only repair.
 
 \subsection{Control methods and metrics}
 
@@ -649,12 +762,111 @@ driver forecasts accumulates at EV resolution.}
 \label{fig:forecasttrajectory}
 \end{figure}
 
-The advanced experiment is forecast-only.  It establishes a statistical and
-operational motivation for charger-based prediction but does not yet establish
-economic value.  Converting predicted counts and attributes into nonoverlapping
-session envelopes, calibrating uncertainty, and passing those envelopes
-through the rolling MPC are required before associating the error reductions
-with avoided cost.
+This first advanced experiment is forecast-only.  It establishes a statistical
+and operational motivation for charger-based prediction but does not yet
+establish economic value.  Section~\ref{sec:flexresults} removes the
+mean-session reconstruction problem by forecasting an additive feasibility
+set, but full-resolution uncertainty calibration and MPC coupling remain
+required before associating either error reduction with avoided cost.
+
+\subsection{Physics-constrained flexibility forecasting}
+\label{sec:flexresults}
+
+\begin{table}[t]
+\centering
+\caption{Q3 matched-scope flexibility forecasting.  Physics-iTransformer
+entries are mean \(\pm\) seed standard deviation over three seeds.  The
+bootstrap interval is for paired daily EV-minus-charger absolute error after
+seed averaging.  Seasonal naive is identical at both resolutions.}
+\label{tab:flexmatched}
+\resizebox{\linewidth}{!}{\input{tables/flexibility_matched_summary.tex}}
+\end{table}
+
+Table~\ref{tab:flexmatched} extends the matched identity from scalar energy to
+the feasible-energy set.  Physics-iTransformer at charger resolution reduces
+terminal-energy, lower-envelope, and upper-envelope MAE by 69.19\%, 60.71\%,
+and 64.07\%, respectively, relative to the same network trained on 314 sparse
+driver series.  The paired 95\% moving-block intervals are
+\([42.48,53.07]\), \([18.56,26.14]\), and \([23.12,31.68]\) kWh, all strictly
+positive.  This is not an artifact of a different realized target:
+seasonal-naive errors are identical at the two resolutions for every metric.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{flexibility_matched_scope.pdf}
+\caption{Physics-constrained forecast error on identical realized flexibility
+signatures.  Error bars are seed standard deviations.  The seasonal-naive bar
+is shared by EV and charger resolutions because lag and aggregation commute.}
+\label{fig:flexmatched}
+\end{figure}
+
+Unlike the earlier unconstrained architectures, the physics model produces a
+100\% valid raw-signature rate.  Its matched charger errors are also lower than
+seasonal naive by 8.50\% for terminal energy, 11.44\% for the lower curve, and
+12.27\% for the upper curve.  The result is important because the lower curve
+encodes deadline urgency and the upper curve encodes how much energy could
+already have been delivered; a terminal-energy-only model cannot distinguish
+these flexibility states.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{flexibility_daily_error.pdf}
+\caption{Seven-day moving mean of matched-scope terminal-energy absolute error
+through Q3 2023.  Physics-model curves average three seeds.  The same
+iTransformer is unstable across sparse driver identities, whereas charger
+error remains near the strong seasonal baseline.}
+\label{fig:flexdaily}
+\end{figure}
+
+Figure~\ref{fig:flexdaily} shows that the EV error is persistent rather than
+caused by a small number of isolated days.  The physics constraints therefore
+do not solve rare driver participation by themselves; they prevent impossible
+outputs, while charger aggregation addresses the sparse-identity estimation
+problem.
+
+\begin{table}[t]
+\centering
+\caption{Full six-charger flexibility forecasting.  The unconstrained
+iTransformer is projected only for this diagnostic and has 0\% raw valid
+signatures; physics-iTransformer is feasible by construction.}
+\label{tab:flexfull}
+\resizebox{\linewidth}{!}{\input{tables/flexibility_full_summary.tex}}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{flexibility_full_scope.pdf}
+\caption{Full-demand Q3 flexibility error.  Physics-iTransformer improves all
+three mean errors over seasonal naive, but individual seeds do not uniformly
+beat that deterministic baseline.}
+\label{fig:flexfull}
+\end{figure}
+
+On full six-charger demand, physics-iTransformer gives
+\(33.43\pm4.84\) kWh/day terminal-energy MAE versus 36.68 for seasonal naive.
+Its lower- and upper-curve MAE values are \(24.57\pm4.06\) and
+\(26.19\pm3.13\) kWh, respectively, versus 25.50 and 27.56 for seasonal
+naive.  All three means improve, but individual seeds do not uniformly beat
+the deterministic baseline; the spread precludes claiming robust dominance.
+The one-seed unconstrained iTransformer has competitive errors only after
+projection; its raw valid-signature rate is zero, so it is not a deployable
+physical forecast without that repair.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{flexibility_envelope_example.pdf}
+\caption{Representative full-demand day selected by median three-seed terminal
+error.  Filled regions show realized and physics-iTransformer cumulative
+feasible-energy bands at the six anchors.  Both predicted curves satisfy the
+physical cone despite the terminal-energy forecast error.}
+\label{fig:flexexample}
+\end{figure}
+
+The compressed signature is not yet a complete controller input.  It must be
+lifted from six anchors to 96 slots, calibrated on validation residuals, and
+combined with arrived-session truth inside rolling MPC.  Until that experiment
+is complete, Table~\ref{tab:flexmatched} establishes a physical forecasting
+advantage, not a cost or revenue advantage.
 
 \subsection{Control value and forecast calibration}
 
@@ -754,7 +966,7 @@ unqualified aggregation speedup.
 \clearpage
 \section{Discussion and limitations}
 
-The experiments support five bounded conclusions.  First, prediction entity is
+The experiments support six bounded conclusions.  First, prediction entity is
 not a cosmetic modeling choice.  On an identical session set, advanced
 driver-level errors accumulate across hundreds of sparse series, whereas the
 charger model learns the aggregate target directly.  Second, a matched-scope
@@ -766,7 +978,10 @@ charger aggregation can be exact and computationally useful, but only because
 physical nonoverlap enables unambiguous disaggregation.  Fifth, a simple
 calibrated uncertainty correction has positive Q3 economic value despite worse
 point MAE, illustrating that forecast quality should ultimately be evaluated
-through downstream control.
+through downstream control.  Sixth, physical validity can be embedded in the
+forecast architecture: the flexibility head guarantees cumulative feasibility
+at every reported anchor, whereas all unconstrained neural signatures in the
+matched Q3 diagnostic require projection.
 
 The seasonal-naive equality also clarifies what the results do not show.
 Aggregation alone cannot improve every forecasting rule: any linear forecast
@@ -789,9 +1004,9 @@ significance, seasonality robustness, or campus-wide generalization;
  available information pattern rather than an impossibility theorem;
  \item correlation graph edges are learned from historical energy only;
  physical distance, electrical topology, traffic, and weather are not used;
- \item advanced model predictions have not been calibrated, reconstructed into
- nonoverlapping sessions, or evaluated in MPC, so their revenue effect is
- unknown;
+ \item the new flexibility signatures are feasible at six anchors but have not
+ been calibrated, lifted to 96 slots, or evaluated in rolling MPC, so their
+ revenue effect is unknown;
  \item the cohort's nonoverlap requirement excludes shared-port anomalies and
  simultaneous connector use;
  \item calibration is marginal and ordinal-matched; it gives neither joint
@@ -807,15 +1022,16 @@ quantity is avoided charging cost.
 
 A submission-strength next experiment should pre-register multiple disjoint
 port cohorts, extend the untouched test to at least 12 billing months, and use
-rolling-origin folds.  Forecast counts and attributes should be mapped to
-feasible ordinal session templates using training-only distributions, followed
-by validation-only conformal calibration.  Individual-EV and charger forecasts
-must then enter their corresponding rolling MPCs under the identical tariff,
-information arrival, feasibility checks, and monthly peak state.  Block
-bootstrap at the month or charger-month level can test both forecast and cost
-differences.  That experiment can determine whether lower charger error creates
-stable avoided cost and whether the observed 1.47\% conformal improvement is
-more than a Q3-specific pilot effect.
+rolling-origin folds.  The predicted anchor cone should be lifted to
+full-resolution cumulative bounds using a validation-only monotone calibration
+map.  It can then enter charger MPC directly as future aggregate flexibility;
+no forecast-to-realized EV assignment is required.  Individual-EV and charger
+forecasts must enter their corresponding rolling MPCs under the identical
+tariff, information arrival, feasibility checks, and monthly peak state.
+Block bootstrap at the month or charger-month level can test both forecast and
+cost differences.  That experiment can determine whether lower charger error
+creates stable avoided cost and whether the observed 1.47\% conformal
+improvement is more than a Q3-specific pilot effect.
 
 \section{Conclusion}
 
@@ -823,17 +1039,21 @@ We separated individual-EV and physical-charger prediction into two auditable
 tasks and compared them on exactly the same sessions.  Across common advanced
 architectures, charger resolution substantially reduces aggregate daily energy
 error, while the full-demand analysis exposes the additional open-set coverage
-burden of driver-specific prediction.  We also developed a
-forecast-calibrated charger MPC that preserves individual-session feasibility
-and carries monthly demand peaks correctly.  In the six-port control pilot,
-conformal robustness reduces cost relative to immediate charging and modestly
-improves on the causal point forecast with zero unserved energy.  Exact
-EV/charger optimization invariance and density-dependent scaling are
-independently verified.  The combined evidence supports charger resolution as
-a promising prediction-and-control abstraction, but the causal link from
-advanced forecast improvement to economic value remains preliminary until the
-new forecasts are calibrated, reconstructed, and run through MPC across more
-cohorts and seasons.
+burden of driver-specific prediction.  We then replaced mean-session output
+with a set-free cumulative flexibility target and embedded its physical cone
+in iTransformer.  On matched Q3 data, the charger physics model reduces all
+three envelope errors relative to both the same EV model and seasonal naive,
+while retaining 100\% valid signatures.  We also developed a forecast-calibrated
+charger MPC that preserves individual-session feasibility and carries monthly
+demand peaks correctly.  In the six-port control pilot, conformal robustness
+reduces cost relative to immediate charging and modestly improves on the
+causal point forecast with zero unserved energy.  Exact EV/charger optimization
+invariance and density-dependent scaling are independently verified.  The
+combined evidence supports charger resolution as a promising
+prediction-and-control abstraction, but the causal link from the new physical
+forecast to economic value remains preliminary until the anchor cone is
+calibrated, lifted to full resolution, and run through MPC across more cohorts
+and seasons.
 
 \section*{Reproducibility statement}
 
@@ -891,6 +1111,10 @@ Operational scope & \eqref{eq:nosub}--\eqref{eq:opwape} & known-driver error
 and unidentified demand cannot cancel \\
 Advanced models & \eqref{eq:forecastloss}--\eqref{eq:graphforecast} &
 training-only scaling/adjacency, fixed split, deterministic seeds \\
+Flexibility forecast &
+\eqref{eq:forecastupper}--\eqref{eq:physicalcone} &
+same-session signature identity, differentiable physical output, raw validity
+audit, and no session assignment metric \\
 Session feasibility & \eqref{eq:evfeasible} & validation, exact energy equality,
 and availability bounds \\
 Charger projection & \eqref{eq:upper}--\eqref{eq:charger} & nonoverlap assertion,
@@ -909,6 +1133,7 @@ secondary LP \\
 
 \section{Artifact commands}
 
+{\footnotesize
 \begin{verbatim}
 MPLCONFIGDIR=/private/tmp/mpl-models PYTHONPATH=src \
   .venv/bin/python -m unittest discover -s tests -v
@@ -916,7 +1141,12 @@ PYTHONPATH=src .venv/bin/python \
   experiments/forecast_coverage_sensitivity.py
 MPLBACKEND=Agg MPLCONFIGDIR=/private/tmp/mpl-fair PYTHONPATH=src \
   .venv/bin/python experiments/make_fair_forecast_artifacts.py
+MPLCONFIGDIR=/private/tmp/mpl-envelope PYTHONPATH=src \
+  .venv/bin/python experiments/envelope_forecast_benchmark.py --quick
+MPLBACKEND=Agg MPLCONFIGDIR=/private/tmp/mpl-flex PYTHONPATH=src \
+  .venv/bin/python experiments/make_flexibility_artifacts.py
 bash experiments/run_paper_protocol.sh
 \end{verbatim}
+}
 
 \end{document}

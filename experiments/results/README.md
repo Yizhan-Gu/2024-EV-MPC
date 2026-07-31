@@ -1,5 +1,33 @@
 # Deterministic smoke results
 
+## Physics-constrained flexibility forecasting
+
+`flexibility_forecast_q3/` contains the compact paper-level results for the
+original additive feasibility-signature benchmark:
+
+- six cumulative anchors for required energy, deliverable energy, and
+  occupied-port equivalents;
+- a physically screened 314-driver matched cohort covering 29.755% of full Q3
+  energy;
+- identical realized signatures for `EV` and `ChargerMatched`;
+- full six-port operational demand in `ChargerFull`;
+- seasonal naive, projected unconstrained iTransformer diagnostic, and a
+  physics-iTransformer that is feasible by construction;
+- three physics-model seeds and 5,000 seven-day moving-block bootstrap
+  resamples;
+- compact daily signatures, metrics, summaries, and figure/table inputs.
+
+Matched charger physics-iTransformer reduces terminal-, lower-, and
+upper-envelope MAE by 69.19%, 60.71%, and 64.07% relative to the identical EV
+architecture. Full-demand three-seed mean errors are below seasonal naive for
+all three targets, but individual-seed variability remains, so the result is
+not presented as uniform dominance. No Hungarian or other session-assignment
+metric is used.
+
+`envelope_forecast_quick/` is the seven-day smoke output. The larger top-128
+development run is archived locally under ignored
+`archive/paper_development_runs/` and is not part of the paper.
+
 ## Fair Q3 EV-versus-charger forecasting
 
 `fair_forecast_q3/` contains the compact forecast-only paper results:

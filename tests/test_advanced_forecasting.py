@@ -7,12 +7,18 @@ import numpy as np
 import torch
 
 from charger_forecasting import (
+    DEFAULT_ANCHOR_SLOTS,
     DLinearRegressor,
+    EnvelopeScaler,
+    FeasibleEnvelopeOutput,
     GraphTemporalRegressor,
     ITransformerRegressor,
     PanelScaler,
+    build_envelope_panel,
     build_daily_panel,
     correlation_adjacency,
+    envelope_validity_mask,
+    project_envelope_signatures,
 )
 from charger_forecasting.training import masked_mse, target_mask
 
@@ -221,6 +227,159 @@ class AdvancedForecastingTests(unittest.TestCase):
             )
         self.assertAlmostEqual(ev_panel.values[..., 1].sum(), 5.0)
         self.assertAlmostEqual(charger_panel.values[..., 1].sum(), 5.0)
+
+    def test_matched_envelope_is_identical_without_session_matching(
+        self,
+    ) -> None:
+        fields = [
+            "driver_id",
+            "session_start_time_la",
+            "session_end_time_la",
+            "total_energy_dispensed",
+            "station_name",
+            "port",
+        ]
+        rows = [
+            {
+                "driver_id": "driver-a",
+                "session_start_time_la": "2023-01-01T08:00:00",
+                "session_end_time_la": "2023-01-01T10:00:00",
+                "total_energy_dispensed": "5.0",
+                "station_name": "Station A",
+                "port": "1",
+            },
+            {
+                "driver_id": "driver-b",
+                "session_start_time_la": "2023-01-01T11:00:00",
+                "session_end_time_la": "2023-01-01T14:00:00",
+                "total_energy_dispensed": "8.0",
+                "station_name": "Station A",
+                "port": "1",
+            },
+            {
+                "driver_id": "excluded",
+                "session_start_time_la": "2023-01-01T15:00:00",
+                "session_end_time_la": "2023-01-01T17:00:00",
+                "total_energy_dispensed": "4.0",
+                "station_name": "Station A",
+                "port": "1",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions.csv"
+            with path.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+            ev_panel = build_envelope_panel(
+                path,
+                level="ev",
+                start="2023-01-01",
+                end="2023-01-01",
+                selection_end="2023-01-01",
+                entity_ids=("driver-a", "driver-b"),
+            )
+            charger_panel = build_envelope_panel(
+                path,
+                level="charger",
+                start="2023-01-01",
+                end="2023-01-01",
+                selection_end="2023-01-01",
+                entity_ids=("Station A|1",),
+                driver_filter=ev_panel.entity_ids,
+            )
+        np.testing.assert_allclose(
+            ev_panel.values.sum(axis=1),
+            charger_panel.values.sum(axis=1),
+        )
+        self.assertTrue(envelope_validity_mask(ev_panel.values).all())
+        self.assertTrue(
+            envelope_validity_mask(charger_panel.values).all()
+        )
+
+    def test_envelope_projection_enforces_physical_signature(self) -> None:
+        n_anchors = len(DEFAULT_ANCHOR_SLOTS)
+        raw = np.zeros((2, 3 * n_anchors), dtype=np.float32)
+        raw[0, :n_anchors] = (3.0, -1.0, 5.0, 4.0, 8.0, 12.0)
+        raw[0, n_anchors : 2 * n_anchors] = (
+            1.0,
+            7.0,
+            4.0,
+            9.0,
+            6.0,
+            10.0,
+        )
+        raw[0, 2 * n_anchors :] = (
+            -0.2,
+            0.1,
+            0.2,
+            1.4,
+            0.1,
+            0.3,
+        )
+        projected = project_envelope_signatures(raw)
+        self.assertTrue(envelope_validity_mask(projected).all())
+        self.assertTrue(
+            np.all(projected[..., 2 * n_anchors :] >= 0.0)
+        )
+        self.assertTrue(
+            np.all(projected[..., 2 * n_anchors :] <= 1.0)
+        )
+
+        invalid_reachability = np.zeros(
+            (1, 3 * n_anchors),
+            dtype=np.float32,
+        )
+        invalid_reachability[0, :n_anchors] = (
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+        )
+        invalid_reachability[0, n_anchors : 2 * n_anchors] = (
+            5.0,
+            7.0,
+            8.0,
+            10.0,
+            10.0,
+            10.0,
+        )
+        invalid_reachability[0, 2 * n_anchors :] = (
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.1,
+            0.0,
+        )
+        self.assertFalse(
+            envelope_validity_mask(invalid_reachability).item()
+        )
+        repaired = project_envelope_signatures(invalid_reachability)
+        self.assertTrue(envelope_validity_mask(repaired).item())
+
+    def test_differentiable_envelope_head_is_feasible(self) -> None:
+        n_features = 3 * len(DEFAULT_ANCHOR_SLOTS)
+        scaler = EnvelopeScaler.fit(
+            np.zeros((4, 2, n_features), dtype=np.float32)
+        )
+        model = FeasibleEnvelopeOutput(
+            DLinearRegressor(
+                context_length=14,
+                n_features=n_features,
+            ),
+            scaler,
+        )
+        scaled = model(
+            torch.zeros(5, 14, n_features),
+            torch.zeros(5, 4),
+        )
+        physical = scaler.inverse_transform(
+            scaled.detach().numpy()
+        )
+        self.assertTrue(envelope_validity_mask(physical).all())
 
 
 if __name__ == "__main__":

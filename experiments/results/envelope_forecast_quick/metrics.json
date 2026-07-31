@@ -1,0 +1,35 @@
+{
+  "status": "quick_sanity",
+  "scientific_target": "Forecast cumulative lower/upper deliverable-energy envelopes and block occupancy directly. No EV-session assignment or Hungarian metric is used.",
+  "data": "data/processed/clean_charging_sessions_enhanced.csv",
+  "metrics": "experiments/results/envelope_forecast_quick/metrics.csv",
+  "daily_signatures": "experiments/results/envelope_forecast_quick/daily_signatures.csv",
+  "matched_identity_max_abs_difference": 3.814697265625e-06,
+  "quality_stats": {
+    "EV": {
+      "raw_sessions": 5479,
+      "infeasible_energy_sessions": 112,
+      "invalid_window_sessions": 6,
+      "overlap_port_days": 94,
+      "overlap_sessions_dropped": 474,
+      "kept_sessions": 4887
+    },
+    "ChargerMatched": {
+      "raw_sessions": 5479,
+      "infeasible_energy_sessions": 112,
+      "invalid_window_sessions": 6,
+      "overlap_port_days": 94,
+      "overlap_sessions_dropped": 474,
+      "kept_sessions": 4887
+    },
+    "ChargerFull": {
+      "raw_sessions": 5479,
+      "infeasible_energy_sessions": 112,
+      "invalid_window_sessions": 6,
+      "overlap_port_days": 94,
+      "overlap_sessions_dropped": 474,
+      "kept_sessions": 4887
+    }
+  },
+  "claim_boundary": "This experiment evaluates forecasted flexibility signatures. The projected signatures have not yet been connected to the rolling MPC controller."
+}

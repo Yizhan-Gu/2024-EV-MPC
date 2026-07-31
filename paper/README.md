@@ -1,6 +1,6 @@
 # Paper artifact
 
-`main_segan.tex` is the current SEGAN-targeted Version 2 research draft. It is compiled
+`main_segan.tex` is the current SEGAN-targeted Version 3 research draft. It is compiled
 with the locally available standard `article` class because `elsarticle.cls`
 is not installed in this environment. The mathematical content, tables, and
 figures can later be transferred to Elsevier's submission template without
@@ -9,9 +9,11 @@ changing the model.
 Main artifacts:
 
 - `main_segan.tex`: manuscript source with fair EV-versus-charger forecasting,
-  the exact charger projection, continuous monthly tariff state, rolling
-  information pattern, conformal calibration, and implementation audit.
-- `main_segan_v2.pdf`: compiled and visually checked Version 2 draft.
+  the physics-constrained additive flexibility target, exact charger
+  projection, continuous monthly tariff state, rolling information pattern,
+  conformal calibration, and implementation audit.
+- `main_segan_v3.pdf`: compiled and visually checked Version 3 draft.
+- `main_segan_v2.pdf`: preserved Version 2 fair-forecast draft.
 - `main_segan.pdf`: preserved Version 1 draft from the charger-MPC phase.
 - `references.bib`: bibliography.
 - `figures/` and `tables/`: generated from the compact audited CSV outputs.
@@ -39,12 +41,21 @@ MPLBACKEND=Agg \
   .venv/bin/python experiments/make_fair_forecast_artifacts.py
 ```
 
+Rebuild only the physics-flexibility tables and figures:
+
+```bash
+MPLBACKEND=Agg \
+  MPLCONFIGDIR=/private/tmp/mpl-flex \
+  PYTHONPATH=src \
+  .venv/bin/python experiments/make_flexibility_artifacts.py
+```
+
 Compile the versioned draft:
 
 ```bash
 cd paper
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
-  -jobname=main_segan_v2 main_segan.tex
+  -jobname=main_segan_v3 main_segan.tex
 ```
 
 The full protocol requires the ignored local file

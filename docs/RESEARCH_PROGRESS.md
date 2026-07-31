@@ -1,9 +1,11 @@
 # Research progress: EV versus charger forecasting and MPC
 
-Last verified: 2026-07-26 (fair Q3 forecast benchmark and Version 2 paper)
+Last verified: 2026-07-30 (physics-constrained flexibility benchmark and
+Version 3 paper)
 
 This is the read-first handoff for future Codex sessions. Do not infer that a
-long experiment, reference-paper reproduction, or MPC coupling is complete
+long experiment, reference-paper reproduction, or advanced-forecast/MPC
+coupling is complete
 unless it is explicitly listed below with an output file and validation
 command.
 
@@ -137,31 +139,136 @@ Full-demand charger results:
 - three-seed GraphGNN: \(30.40\pm1.48\) kWh/day and 31.37% WAPE;
 - iTransformer is less stable across seeds and must not be called the winner.
 
-### Version 2 manuscript and figures
+### Original set-free flexibility-envelope experiment
+
+Implemented in:
+
+- `src/charger_forecasting/envelope.py`;
+- `experiments/envelope_forecast_benchmark.py`;
+- `experiments/make_flexibility_artifacts.py`;
+- `tests/test_advanced_forecasting.py`.
+
+This is an original charger-native formulation. It does **not** reproduce the
+reference paper's session-assignment or retrieval procedure and it has no
+Hungarian matching metric. Each day is represented directly by six cumulative
+feasibility anchors at 08:00, 12:00, 16:00, 20:00, 21:00, and 24:00:
+
+\[
+\mathbf s_{t,n}
+=
+\left[
+\mathbf L_{t,n},\,
+\mathbf U_{t,n},\,
+\mathbf O_{t,n}
+\right],
+\]
+
+where \(\mathbf L\) and \(\mathbf U\) are the cumulative required- and
+deliverable-energy bounds and \(\mathbf O\) is the occupied-port-equivalent
+profile. The signature is additive, so summing it over eligible EVs is
+mathematically identical to aggregating the same realized sessions at the six
+physical ports. The audited maximum absolute identity residual is
+\(4.58\times10^{-5}\) in float32 arithmetic.
+
+The differentiable physics output layer guarantees, without inference-time
+repair:
+
+\[
+0\le L_b\le U_b\le E,\qquad
+L_b\le L_{b+1},\qquad
+U_b\le U_{b+1},\qquad
+L_6=U_6=E,
+\]
+
+plus occupancy-limited cumulative capacity and remaining-energy reachability.
+Unconstrained models retain a separate projection diagnostic, but their raw
+validity is reported so projection cannot be mistaken for native accuracy.
+
+Pre-commit audit on 2026-07-30 found that remaining-capacity reachability had
+initially been applied to the upper curve but omitted from the learned lower
+curve and validity mask. The hard lower-bound constraint, NumPy projection,
+validity audit, and unit test were corrected; the quick run and all three
+paper seeds were then rerun from scratch. All numbers below are post-fix
+results.
+
+Physical screening is applied before cohort selection and evaluation:
+
+- six fixed ports, January 2022--September 2023;
+- 6,238 raw sessions;
+- 120 infeasible-energy and 7 invalid/overnight records removed;
+- 94 overlapping port-days containing 474 records removed;
+- 5,637 physically unambiguous sessions retained;
+- 314 recurring drivers with at least three training sessions;
+- Q3 matched energy 2,642.384 kWh versus full energy 8,880.536 kWh
+  (29.755% coverage).
+
+Paper-level Q3 outputs use seeds 20260730, 20260731, and 20260732. On the
+identical matched signature, physics-iTransformer at charger resolution
+reduces aggregate MAE relative to the same EV-resolution architecture by:
+
+| Target | EV physics MAE | Charger physics MAE | Reduction | 95% paired block CI for EV minus charger |
+|---|---:|---:|---:|---:|
+| Terminal energy | 68.74 +/- 6.87 kWh | 21.18 +/- 2.54 kWh | 69.19% | [42.48, 53.07] kWh |
+| Lower envelope | 36.73 +/- 4.31 kWh | 14.43 +/- 0.98 kWh | 60.71% | [18.56, 26.14] kWh |
+| Upper envelope | 42.62 +/- 3.74 kWh | 15.31 +/- 0.98 kWh | 64.07% | [23.12, 31.68] kWh |
+
+Seasonal naive is exactly equal at EV and charger resolution for all three
+targets, which is the matched-scope pipeline audit. Physics-iTransformer has
+100% valid raw signatures; the unconstrained iTransformer has 0% raw validity
+and is shown only after an explicitly labeled projection.
+
+On full six-port demand, physics-iTransformer's three-seed mean terminal,
+lower-, and upper-envelope MAE values are 33.43, 24.57, and 26.19 kWh,
+respectively, versus 36.68, 25.50, and 27.56 kWh for seasonal naive. Individual
+seeds do not all beat the baseline, so aggregation still does not establish
+robust uniform dominance.
+
+Tracked compact outputs:
+
+- `experiments/results/envelope_forecast_quick/`;
+- `experiments/results/flexibility_forecast_q3/`;
+- `paper/tables/flexibility_matched_summary.tex`;
+- `paper/tables/flexibility_full_summary.tex`;
+- `paper/figures/flexibility_matched_scope.{pdf,png}`;
+- `paper/figures/flexibility_full_scope.{pdf,png}`;
+- `paper/figures/flexibility_daily_error.{pdf,png}`;
+- `paper/figures/flexibility_envelope_example.{pdf,png}`.
+
+The top-128 development run was moved to the ignored
+`archive/paper_development_runs/envelope_q3_top128_20260730/` directory. It is
+not a paper result and will not be pushed.
+
+Critical claim boundary: these six-anchor feasibility forecasts have not yet
+been lifted to 96 slots, calibrated into uncertainty sets, or passed through
+rolling MPC. They establish a fair feasibility-set forecasting advantage, not
+a revenue result.
+
+### Version 3 manuscript and figures
 
 Current draft:
 
 - source: `paper/main_segan.tex`;
-- compiled versioned PDF: `paper/main_segan_v2.pdf`;
+- compiled versioned PDF: `paper/main_segan_v3.pdf`;
 - new tables: `paper/tables/forecast_fair_comparison.tex` and
-  `paper/tables/forecast_full_scope.tex`;
+  `paper/tables/forecast_full_scope.tex`, plus the two flexibility tables;
 - new paper figures:
   `forecast_matched_scope`,
   `forecast_operational_scope`, and
-  `forecast_daily_trajectories` in both PDF and PNG.
+  `forecast_daily_trajectories`, plus the four flexibility figures, in both
+  PDF and PNG.
 
-The manuscript now includes related work, the two prediction tasks, matched
-and no-substitution estimands, iTransformer/GNN equations, the three-seed Q3
-results, bootstrap intervals, negative hurdle results, expanded limitations,
-and an implementation-to-equation audit. The PDF was rendered page by page
-with Poppler for visual QA. The final local build is 17 pages and has no
-overfull boxes, unresolved references, or LaTeX warnings.
+The manuscript now includes the original additive flexibility target, the
+differentiable physical output cone, physical data screening, three-seed
+matched and full-scope results, exact identity and raw-validity audits, honest
+negative/mixed results, expanded limitations, and a revised
+implementation-to-equation audit. The reference paper is used only in related
+work. The final 21-page PDF was rendered page by page with Poppler for visual
+QA and has no overfull boxes, unresolved references, or LaTeX warnings.
 
-Critical claim boundary: the advanced forecasts remain forecast-only. They
-have not been calibrated, reconstructed into feasible nonoverlapping sessions,
-or sent through MPC. The 28.23% V0G saving and 1.47% point-forecast improvement
-come from the separate historical-median/conformal MPC pilot, not from
-iTransformer or GraphGNN.
+Critical claim boundary: the advanced forecasts remain forecast-only. The
+28.23% V0G saving and 1.47% point-forecast improvement come from the separate
+historical-median/conformal MPC pilot, not from iTransformer, GraphGNN, or the
+new flexibility model.
 
 ## Mathematical benchmark definition
 
@@ -328,7 +435,7 @@ MPLCONFIGDIR=/private/tmp/mpl-models \
   .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Verified result on 2026-07-26: 16 tests passed.
+Verified result on 2026-07-30: 19 tests passed.
 
 Quick benchmark:
 
@@ -342,32 +449,33 @@ MPLCONFIGDIR=/private/tmp/mpl-models \
 
 ## Reference-paper boundary
 
-The requested reference PDF was expected at
-`/Users/admin/Downloads/qt4463c0cx.pdf`, but that file was absent and no
-matching local file was found on 2026-07-26. No claim has been made that its
-methodology was reproduced. Reattach the PDF before locking the final
-experiment matrix or writing the related-work comparison against that paper.
+The replacement PDF at `/Users/admin/Desktop/qt4463c0cx.pdf` was reviewed as
+background for problem framing. The project is not a continuation or
+reproduction of that work. In particular:
+
+- no Hungarian or other session-assignment metric is used;
+- no historical-day/session retrieval method is copied;
+- no claim depends on reproducing its numerical results;
+- the contribution is the additive charger/EV flexibility signature,
+  physics-constrained forecasting head, fair matched-scope identity, and
+  subsequent charger-native MPC coupling.
 
 ## Next experiments, in order
 
-1. Replace the failed class-balanced hurdle with a validation-calibrated
-   rare-event objective or hierarchical count model. Preserve the failed
-   baseline as a negative result.
-2. Add PatchTST and TimeMixer as targeted ablations; consider SAMformer if
-   small-sample instability remains visible. Do not add a large pretrained
-   model unless it beats strong simple baselines under the same split.
-3. Replace or augment correlation edges with physical/spatial charger edges
-   if trustworthy metadata are available; compare fixed, learned, and no-graph
-   adjacency.
-4. Extend beyond the current three-seed Q3 benchmark to rolling-origin folds,
-   multiple port cohorts, and at least 12 billing months.
-5. Calibrate count, energy, and timing uncertainty using validation-only
-   residuals.
-6. Reconstruct feasible sessions/envelopes from each task's predictions and
-   run both forecasts through their corresponding rolling MPC formulations.
-7. Compare revenue/cost, peak demand, unserved energy, runtime, and forecast
-   error. Charger-based superiority must emerge from the frozen protocol; it
-   must not be assumed or engineered into the metrics.
+1. Lift the six-anchor physical cone to 96-slot cumulative envelopes using a
+   validation-only monotone interpolation/calibration map.
+2. Calibrate forecast uncertainty from validation residuals without test
+   leakage and preserve the 100% hard-feasibility guarantee.
+3. Feed EV and charger forecasts into their corresponding rolling MPCs under
+   the same tariff, arrival information, monthly peak state, feasibility
+   checks, and random seeds. No cross-entity session assignment is required.
+4. Compare avoided charging cost, peak demand, unserved energy, perfect-
+   information regret, runtime, and forecast error. Charger superiority must
+   emerge from the frozen protocol; it must not be engineered into a metric.
+5. Extend to multiple disjoint port cohorts, rolling-origin folds, and at least
+   12 billing months before a general economic claim.
+6. Add PatchTST or TimeMixer only as targeted forecasting ablations if they
+   improve the physical target under the same split and compute budget.
 
 ## Non-negotiable boundaries
 
@@ -377,5 +485,7 @@ experiment matrix or writing the related-work comparison against that paper.
 - Report EV cold-start/coverage explicitly.
 - Do not compare raw per-entity EV and charger MAE as if their scales match.
 - Do not use archived Copilot outputs as evidence.
+- Do not use Hungarian/session-assignment metrics; compare additive realized
+  flexibility sets and downstream MPC outcomes directly.
 - Do not commit raw session CSVs, trained model weights, caches, or large debug
   outputs.

@@ -54,6 +54,19 @@ covers 29.77% of full six-port Q3 energy, so full-demand results also use a
 no-substitution operational metric. These advanced forecasts have not yet been
 reconstructed into sessions or coupled to MPC.
 
+The current Version 3 phase adds an original set-free flexibility target:
+cumulative lower/upper deliverable-energy envelopes and occupied-port
+equivalents at six intraday anchors. A differentiable physics head guarantees
+monotonic bounds, terminal energy equality, and occupancy-limited capacity.
+On the physically screened matched Q3 cohort, charger-resolution
+physics-iTransformer reduces terminal-, lower-, and upper-envelope MAE by
+69.19%, 60.71%, and 64.07% relative to the same EV-resolution architecture,
+with strictly positive paired block-bootstrap intervals. This comparison uses
+identical realized sessions and no Hungarian/session-assignment metric.
+Full-demand mean errors improve over seasonal naive but vary materially by
+seed, and the signatures have not yet been passed through MPC, so no revenue
+claim is attached to this experiment.
+
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
 claims must not be used in the paper without reimplementation and rerunning in
@@ -105,10 +118,9 @@ Run the full frozen protocol (local processed data required):
 bash experiments/run_paper_protocol.sh
 ```
 
-The current Version 2 manuscript is `paper/main_segan_v2.pdf`, with source in
-`paper/main_segan.tex`. Version 1 remains `paper/main_segan.pdf`. Large
-source/session CSVs remain ignored; only compact audited experiment summaries
-are tracked.
+The current Version 3 manuscript is `paper/main_segan_v3.pdf`, with source in
+`paper/main_segan.tex`. Versions 1 and 2 remain preserved. Large source/session
+CSVs remain ignored; only compact audited experiment summaries are tracked.
 
 ## Advanced forecast-only benchmark
 
@@ -126,3 +138,14 @@ The full Q3 three-seed outputs are tracked under
 `experiments/results/fair_forecast_q3/`. See `docs/RESEARCH_PROGRESS.md` for
 the task definitions, fairness boundary, exact results, and next required
 experiments.
+
+Run the quick physics-envelope smoke test:
+
+```bash
+MPLCONFIGDIR=/private/tmp/mpl-envelope \
+  PYTHONPATH=src \
+  .venv/bin/python experiments/envelope_forecast_benchmark.py --quick
+```
+
+Paper-level three-seed flexibility outputs are under
+`experiments/results/flexibility_forecast_q3/`.
