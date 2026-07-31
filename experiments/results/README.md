@@ -24,9 +24,18 @@ all three targets, but individual-seed variability remains, so the result is
 not presented as uniform dominance. No Hungarian or other session-assignment
 metric is used.
 
+The Version 4 artifact pass adds compact task-definition, model-design, and
+all-model diagnostic tables plus an original architecture figure. It also
+uses a connected-dot matched comparison and a normalized forest-style
+full-demand comparison. These are presentation changes generated from the
+same frozen compact Q3 results; no three-month model training was rerun.
+
 `envelope_forecast_quick/` is the seven-day smoke output. The larger top-128
 development run is archived locally under ignored
 `archive/paper_development_runs/` and is not part of the paper.
+
+New advanced forecast and coverage runs default to July 1--31. Explicit later
+dates are reserved for intentional frozen paper replication.
 
 ## Fair Q3 EV-versus-charger forecasting
 

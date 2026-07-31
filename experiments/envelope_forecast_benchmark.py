@@ -79,7 +79,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--panel-start", default="2022-01-01")
     parser.add_argument("--train-end", default="2023-03-31")
     parser.add_argument("--validation-end", default="2023-06-30")
-    parser.add_argument("--test-end", default="2023-09-30")
+    parser.add_argument(
+        "--test-end",
+        default="2023-07-31",
+        help=(
+            "Development runs default to July only. Pass an explicit later "
+            "date only for a frozen paper-scale replication."
+        ),
+    )
     parser.add_argument("--context-length", type=int, default=28)
     parser.add_argument("--ev-top-k", type=int, default=512)
     parser.add_argument("--ev-minimum-sessions", type=int, default=3)

@@ -1,0 +1,11 @@
+\begin{tabular}{llll}
+\toprule
+Stage & Mathematical object & Implementation & Role \\
+\midrule
+Target & $[\mathbf L,\mathbf U,\mathbf O]\in\mathbb R^{18}$ & six anchors, three channels & additive feasible set \\
+History & $\widetilde{\mathbf X}\in\mathbb R^{28\times18}$ & training-only scaling & leakage-safe context \\
+Backbone & 18 variate tokens in $\mathbb R^{32}$ & one 4-head encoder layer & cross-feature dependence \\
+Physical head & $(\widehat{\mathbf L},\widehat{\mathbf U},\widehat{\mathbf O})$ & sigmoid, softmax, cumulative closure & hard feasibility \\
+Objective & weighted standardized MSE & active weight 3 & retain informative zero days \\
+\bottomrule
+\end{tabular}

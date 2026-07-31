@@ -35,7 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-start", default="2022-01-01")
     parser.add_argument("--train-end", default="2023-03-31")
     parser.add_argument("--test-start", default="2023-07-01")
-    parser.add_argument("--test-end", default="2023-09-30")
+    parser.add_argument(
+        "--test-end",
+        default="2023-07-31",
+        help=(
+            "Development runs default to July only. Pass an explicit later "
+            "date only for a frozen paper-scale replication."
+        ),
+    )
     parser.add_argument(
         "--thresholds",
         type=int,

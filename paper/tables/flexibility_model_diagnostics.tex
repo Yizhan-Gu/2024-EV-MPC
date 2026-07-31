@@ -1,0 +1,18 @@
+\begin{tabular}{lllrrrrrr}
+\toprule
+Task & Model & Seeds & Terminal & Lower & Upper & Width & Raw valid & Parameters \\
+ & & & (kWh/day) & (kWh) & (kWh) & (kWh) & (\%) & \\
+\midrule
+Individual EV & Seasonal naive & 1 & \textbf{23.14} & \textbf{16.30} & \textbf{17.45} & 2.31 & 100 & 0 \\
+Individual EV & iTransformer + projection & 1 & 76.32 & 45.26 & 50.64 & 6.03 & 0 & 14,331 \\
+Individual EV & Physics-iTransformer & 3 & \underline{68.74 $\pm$ 6.87} & \underline{36.73 $\pm$ 4.31} & \underline{42.62 $\pm$ 3.74} & 7.27 & 100 & 14,331 \\
+\addlinespace
+Physical charger & Seasonal naive & 1 & 23.14 & 16.30 & 17.45 & 2.31 & 100 & 0 \\
+Physical charger & iTransformer + projection & 1 & \underline{22.63} & \underline{16.27} & \underline{17.17} & 2.44 & 0 & 14,331 \\
+Physical charger & Physics-iTransformer & 3 & \textbf{21.18 $\pm$ 2.54} & \textbf{14.43 $\pm$ 0.98} & \textbf{15.31 $\pm$ 0.98} & 2.85 & 100 & 14,331 \\
+\addlinespace
+Full charger demand & Seasonal naive & 1 & 36.68 & 25.50 & 27.56 & 5.44 & 100 & 0 \\
+Full charger demand & iTransformer + projection & 1 & \underline{34.71} & \textbf{24.32} & \textbf{25.97} & 6.00 & 0 & 14,331 \\
+Full charger demand & Physics-iTransformer & 3 & \textbf{33.43 $\pm$ 4.84} & \underline{24.57 $\pm$ 4.06} & \underline{26.19 $\pm$ 3.13} & 5.43 & 100 & 14,331 \\
+\bottomrule
+\end{tabular}

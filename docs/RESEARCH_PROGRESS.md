@@ -1,7 +1,7 @@
 # Research progress: EV versus charger forecasting and MPC
 
-Last verified: 2026-07-30 (physics-constrained flexibility benchmark and
-Version 3 paper)
+Last verified: 2026-07-30 (Version 4 mathematics, model diagnostics, and
+paper-figure audit)
 
 This is the read-first handoff for future Codex sessions. Do not infer that a
 long experiment, reference-paper reproduction, or advanced-forecast/MPC
@@ -243,27 +243,51 @@ been lifted to 96 slots, calibrated into uncertainty sets, or passed through
 rolling MPC. They establish a fair feasibility-set forecasting advantage, not
 a revenue result.
 
-### Version 3 manuscript and figures
+### Version 4 manuscript, formulas, tables, and figures
 
 Current draft:
 
 - source: `paper/main_segan.tex`;
-- compiled versioned PDF: `paper/main_segan_v3.pdf`;
+- compiled versioned PDF: `paper/main_segan_v4.pdf`;
+- preserved prior draft: `paper/main_segan_v3.pdf`;
 - new tables: `paper/tables/forecast_fair_comparison.tex` and
-  `paper/tables/forecast_full_scope.tex`, plus the two flexibility tables;
+  `paper/tables/forecast_full_scope.tex`, plus
+  `flexibility_task_definition.tex`, `flexibility_model_design.tex`,
+  `flexibility_model_diagnostics.tex`, and the two summary tables;
 - new paper figures:
   `forecast_matched_scope`,
   `forecast_operational_scope`, and
-  `forecast_daily_trajectories`, plus the four flexibility figures, in both
-  PDF and PNG.
+  `forecast_daily_trajectories`, plus the five flexibility figures, in both
+  PDF and PNG. The new `physics_itransformer_architecture` figure is an
+  original diagram of this repository's implementation.
 
-The manuscript now includes the original additive flexibility target, the
-differentiable physical output cone, physical data screening, three-seed
-matched and full-scope results, exact identity and raw-validity audits, honest
-negative/mixed results, expanded limitations, and a revised
-implementation-to-equation audit. The reference paper is used only in related
-work. The final 21-page PDF was rendered page by page with Poppler for visual
-QA and has no overfull boxes, unresolved references, or LaTeX warnings.
+Version 4 expands the paper from the abbreviated model description to the
+complete training-only standardization, variate-token embedding, multi-head
+attention, calendar-logit map, occupancy capacity, softmax increment,
+remaining-capacity reachability, cumulative closure, and weighted signature
+loss equations. The new task table makes the individual-EV, matched-charger,
+and full-charger estimands explicit. The diagnostic table jointly reports
+accuracy, seed variation, raw physical validity, flexibility-width error, and
+parameter count for every task/model combination.
+
+The matched result is now a connected-dot comparison and the full-demand
+result is a normalized forest-style plot relative to seasonal naive. Both
+retain vector PDF output and colorblind-safe, limited palettes. The final
+23-page PDF was rendered page by page with Poppler; the architecture, formula,
+task-definition, diagnostic, result, and appendix pages were visually checked.
+The LaTeX log has no overfull boxes, unresolved references, or warnings.
+
+Development compute policy from Version 4 onward:
+
+- `advanced_forecast_benchmark.py`,
+  `envelope_forecast_benchmark.py`, and
+  `forecast_coverage_sensitivity.py` default to test end `2023-07-31`;
+- new model development is July-only unless an explicit frozen replication is
+  justified;
+- the already completed Q3 results remain valid versioned evidence and are not
+  rerun merely to update paper layout;
+- `run_paper_protocol.sh` retains explicit Q3 dates because it is the frozen
+  full replication command, not the default development command.
 
 Critical claim boundary: the advanced forecasts remain forecast-only. The
 28.23% V0G saving and 1.47% point-forecast improvement come from the separate
@@ -435,7 +459,9 @@ MPLCONFIGDIR=/private/tmp/mpl-models \
   .venv/bin/python -m unittest discover -s tests -v
 ```
 
-Verified result on 2026-07-30: 19 tests passed.
+Verified result on 2026-07-30: 19 tests passed. Version 4 additionally passed
+Python syntax checks, artifact regeneration from tracked compact Q3 summaries,
+LaTeX compilation, log inspection, and Poppler page rendering.
 
 Quick benchmark:
 

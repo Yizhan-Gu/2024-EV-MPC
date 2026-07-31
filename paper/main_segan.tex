@@ -31,7 +31,7 @@ Physics-Constrained Flexibility Forecasting and Model Predictive Control}\\
 demand-charge accounting for workplace charging}
 \author{Yizhan Gu\\
 University of California San Diego, La Jolla, CA, USA}
-\date{Version 3 draft generated July 30, 2026\\
+\date{Version 4 draft generated July 30, 2026\\
 \small Target journal: \emph{Sustainable Energy, Grids and Networks}}
 
 \begin{document}
@@ -254,7 +254,17 @@ Because summation and the seven-day lag commute, its EV and charger aggregate
 predictions must be identical under~\eqref{eq:matchedidentity}; this is an
 explicit pipeline check.
 
-Neural models minimize
+Let \(\mu_f^{\mathrm{tr}}\) and \(\sigma_f^{\mathrm{tr}}\) denote feature
+statistics computed on training entity-days only.  The causal input tensor is
+\begin{equation}
+ \widetilde X_{t,n,\ell,f}
+ =
+ \frac{X_{t,n,\ell,f}-\mu_f^{\mathrm{tr}}}
+ {\sigma_f^{\mathrm{tr}}},
+ \qquad \ell=1,\ldots,L,                              \label{eq:standardize}
+\end{equation}
+with \(L=28\).  The next-day calendar vector contains sine/cosine encodings of
+weekday and day of year.  Neural models minimize
 \begin{equation}
  \mathcal L(\theta)=
  \frac{\sum_{t,n,f}m_{t,n,f}
@@ -265,14 +275,25 @@ where count and energy receive weight three on active days and timing targets
 are masked on inactive days.  Scaling statistics use training data only.
 
 For iTransformer, the complete lookback of variable \(f\) becomes one token:
+\begin{align}
+ \mathbf z_f^{(0)}
+ &=W_x[\widetilde x_{t-L+1,f},\ldots,
+       \widetilde x_{t,f}]^\top+\mathbf e_f,             \label{eq:itoken}\\
+ Q_h&=Z^{(0)}W_h^Q,\quad K_h=Z^{(0)}W_h^K,\quad
+ V_h=Z^{(0)}W_h^V,                                      \label{eq:iqkv}\\
+ A_h&=\operatorname{softmax}\!\left(
+ \frac{Q_hK_h^\top}{\sqrt{d_h}}\right)V_h.              \label{eq:iattention}
+\end{align}
+The four head outputs are concatenated, passed through residual normalization
+and a feature-wise feed-forward network, and denoted by
+\(\mathbf H\in\mathbb R^{F\times32}\).  With one encoder layer and feed-forward
+width 128, the unconstrained next-day logits are
 \begin{equation}
- \mathbf z_f=W_x[x_{t-L+1,f},\ldots,x_{t,f}]^\top
- +\mathbf e_f,\qquad
- \mathbf H=\operatorname{Encoder}([\mathbf z_1,\ldots,\mathbf z_F]).
-                                                               \label{eq:itransformer}
+ \mathbf z=W_o\mathbf H+W_q\mathbf q_t,
+ \qquad \mathbf z\in\mathbb R^F.                        \label{eq:itransformer}
 \end{equation}
-Attention operates across session attributes while the feed-forward network
-acts on each attribute token.
+Thus attention operates across physical attributes rather than timestamps,
+while the 28-point temporal trajectory is retained inside each variate token.
 
 The charger-only graph model first encodes each port history with a shared GRU.
 Its adjacency uses the top three absolute energy correlations computed only on
@@ -339,30 +360,85 @@ extends beyond daily energy:
 No forecast-to-realized session assignment is needed.
 
 An unconstrained regressor can output decreasing cumulative energy, reversed
-bounds, or terminal energy exceeding predicted occupancy capacity.  The
-physics-iTransformer therefore maps latent occupancy values through
-\(\widehat O_b=\operatorname{sigmoid}(z^O_b)\), defines block capacity
-\(\widehat K_b=\bar p\Delta t|\mathcal K_b|\widehat O_b\), and bounds terminal
-energy by
+bounds, or terminal energy exceeding predicted occupancy capacity.  Partition
+its 18 logits as
+\(\mathbf z=[\mathbf z^L,\mathbf z^U,\mathbf z^O]\).
+The physics-iTransformer maps occupancy through
+\(\widehat O_b=\operatorname{sigmoid}(z^O_b)\) and defines block and cumulative
+capacities
+\begin{equation}
+ \widehat K_b=\bar p\Delta t|\mathcal K_b|\widehat O_b,
+ \qquad
+ \widehat C_b=\sum_{j\le b}\widehat K_j,\qquad
+ \widehat R_b=\widehat C_B-\widehat C_b.                \label{eq:physicalcapacity}
+\end{equation}
+The terminal-energy logit reuses both terminal curve channels,
+\(z^E=(z_B^L+z_B^U)/2\), and therefore
 \begin{equation}
  \widehat E=
- \operatorname{sigmoid}(z^E)\sum_b\widehat K_b.         \label{eq:physicalenergy}
+ \operatorname{sigmoid}(z^E)\widehat C_B.              \label{eq:physicalenergy}
 \end{equation}
-Softmax increments create monotone preliminary lower and upper curves.  A
-differentiable cumulative map then enforces
+For \(r\in\{L,U\}\), softmax fractions and their cumulative targets are
+\begin{equation}
+ \pi_b^r=\frac{\exp(z_b^r)}{\sum_{j=1}^B\exp(z_j^r)},
+ \qquad
+ \widetilde r_b=\widehat E\sum_{j\le b}\pi_j^r,\qquad
+ \widehat M_b=\pos{\widehat E-\widehat R_b}.            \label{eq:physicalincrements}
+\end{equation}
+The differentiable closure implemented by cumulative maxima is
+\begin{align}
+ \widehat U_b
+ &=\max_{k\le b}
+ \min\{\widehat C_k,\max(\widetilde U_k,\widehat M_k)\},
+                                                               \label{eq:physicaluppermap}\\
+ \widehat L_b
+ &=\max_{k\le b}
+ \min\{\widehat U_k,\max(\widetilde L_k,\widehat M_k)\},
+                                                               \label{eq:physicallowermap}
+\end{align}
+with both terminal components set exactly to \(\widehat E\).  Consequently,
 \begin{align}
  0&\le\widehat L_1\le\cdots\le\widehat L_B=\widehat E, \nonumber\\
-0&\le\widehat U_1\le\cdots\le\widehat U_B=\widehat E, \nonumber\\
+ 0&\le\widehat U_1\le\cdots\le\widehat U_B=\widehat E, \nonumber\\
  \widehat L_b&\le\widehat U_b
- \le\sum_{j\le b}\widehat K_j,\qquad
+ \le\widehat C_b,\qquad
  \widehat L_b\ge
- \widehat E-\sum_{j>b}\widehat K_j.                    \label{eq:physicalcone}
+ \widehat E-\widehat R_b.                              \label{eq:physicalcone}
 \end{align}
 Thus every network output belongs to the compressed feasibility cone during
-training and inference.  Active entity-days receive weight three, while zero
-days remain in the loss because absence is informative.  Primary errors are
-computed after summing signatures across entities: terminal-energy MAE and
-mean absolute lower- and upper-curve error across anchors.
+training and inference.  It is transformed back to standardized coordinates
+inside the network, and the signature objective is
+\begin{equation}
+ \mathcal L_{\mathrm{sig}}(\theta)=
+ \frac{\sum_{t,n,f}w_{t,n}
+ [(\widehat s_{t,n,f}-s_{t,n,f})/\sigma_f^{\mathrm{tr}}]^2}
+ {F\sum_{t,n}w_{t,n}},
+ \quad
+ w_{t,n}=\begin{cases}3,&E_{t,n}>0,\\1,&E_{t,n}=0.\end{cases}
+                                                               \label{eq:signatureloss}
+\end{equation}
+Zero days remain in the objective because absence is informative.  Primary
+errors are computed after summing signatures across entities: terminal-energy
+MAE and mean absolute lower- and upper-curve error across anchors.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{physics_itransformer_architecture.pdf}
+\caption{Physics-iTransformer data path.  The learned backbone predicts 18
+unconstrained logits; the differentiable decoder in
+\eqref{eq:physicalcapacity}--\eqref{eq:physicallowermap} converts them to a
+feasible next-day flexibility signature during both training and inference.}
+\label{fig:physicsarchitecture}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Physics-iTransformer specification.  The same architecture,
+optimizer, history, and target semantics are used for individual-EV and
+charger tasks; only the prediction entity and resulting panel change.}
+\label{tab:flexdesign}
+\resizebox{\linewidth}{!}{\input{tables/flexibility_model_design.tex}}
+\end{table}
 
 \section{Physical and tariff model}
 \subsection{Sets, data, and assumptions}
@@ -614,6 +690,15 @@ and window screen.  The target identity in~\eqref{eq:signatureidentity} is
 audited before every run; the maximum absolute discrepancy is
 \(4.58\times10^{-5}\) in float32 arithmetic.
 
+\paragraph{Development and frozen-evaluation windows.}
+The compact results reported in this draft are the already completed,
+chronologically frozen July--September evaluation.  To avoid repeatedly
+spending three months of compute during model development, all new advanced
+forecast, flexibility, and coverage commands now default to July 1--31.
+Promotion of a future candidate to a paper claim requires an explicit frozen
+evaluation window and a new versioned result directory; July-only development
+outputs are never mixed into the existing Q3 tables.
+
 Hyperparameter selection is chronological.  Candidate
 \(\alpha\in\{0.1,0.2,0.3,0.4\}\) values use April--May residual calibration and
 June closed-loop validation.  After selecting \(\alpha=0.1\), the corrections
@@ -636,6 +721,16 @@ ChargerFull measures operational station demand.  We report per-entity
 count, energy, and timing errors for diagnostics, but the primary comparison
 uses aggregate daily energy MAE in~\eqref{eq:matchedloss}.  Full-scope
 deployability uses~\eqref{eq:opwape}.
+
+\begin{table}[t]
+\centering
+\caption{Concrete flexibility-task definitions.  Individual EV and matched
+charger use the same 2,642.38 kWh of physically screened Q3 sessions, making
+entity resolution the only task-level difference.  Full charger is the
+separate operational estimand.}
+\label{tab:flexscope}
+\resizebox{\linewidth}{!}{\input{tables/flexibility_task_definition.tex}}
+\end{table}
 
 The hurdle model first classifies whether an entity is active and then
 regresses attributes conditional on activity.  It is retained even when it
@@ -794,9 +889,10 @@ seasonal-naive errors are identical at the two resolutions for every metric.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{flexibility_matched_scope.pdf}
-\caption{Physics-constrained forecast error on identical realized flexibility
-signatures.  Error bars are seed standard deviations.  The seasonal-naive bar
-is shared by EV and charger resolutions because lag and aggregation commute.}
+\caption{Matched-scope comparison as a connected-dot plot.  Each line joins
+the same physics-iTransformer architecture at the two entity resolutions;
+horizontal bars are seed standard deviations.  The diamond is the shared
+seasonal-naive error, and lower values are better.}
 \label{fig:flexmatched}
 \end{figure}
 
@@ -826,6 +922,26 @@ problem.
 
 \begin{table}[t]
 \centering
+\caption{Model-level flexibility diagnostics across all three tasks.  Values
+are aggregate MAE; stochastic entries are mean \(\pm\) seed standard
+deviation.  Best and second-best errors within each task are bold and
+underlined.  ``Raw valid'' is evaluated before any projection.}
+\label{tab:flexdiagnostics}
+\resizebox{\linewidth}{!}{\input{tables/flexibility_model_diagnostics.tex}}
+\end{table}
+
+Table~\ref{tab:flexdiagnostics} separates three effects that a single accuracy
+number would hide.  Seasonal naive is physically valid because it reuses an
+observed signature.  The unconstrained iTransformer is competitive after
+projection but produces no valid raw signatures in these runs.
+Physics-iTransformer has the same learned backbone scale as its unconstrained
+counterpart and achieves 100\% raw validity, so feasibility is an architectural
+property rather than a favorable repair step.  The matched charger task also
+reduces the number of modeled entities from 314 to six without changing the
+realized target.
+
+\begin{table}[t]
+\centering
 \caption{Full six-charger flexibility forecasting.  The unconstrained
 iTransformer is projected only for this diagnostic and has 0\% raw valid
 signatures; physics-iTransformer is feasible by construction.}
@@ -836,9 +952,10 @@ signatures; physics-iTransformer is feasible by construction.}
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{flexibility_full_scope.pdf}
-\caption{Full-demand Q3 flexibility error.  Physics-iTransformer improves all
-three mean errors over seasonal naive, but individual seeds do not uniformly
-beat that deterministic baseline.}
+\caption{Full-demand Q3 error normalized by seasonal naive.  Values left of
+the dashed reference improve on the baseline; horizontal bars show seed
+standard deviation after the same normalization.  Physics-iTransformer
+improves all three means, but the intervals visibly cross the reference.}
 \label{fig:flexfull}
 \end{figure}
 
@@ -1109,10 +1226,10 @@ Matched forecasting & \eqref{eq:paneltarget}--\eqref{eq:matchedloss} &
 training-only driver cohort and exact daily energy identity \\
 Operational scope & \eqref{eq:nosub}--\eqref{eq:opwape} & known-driver error
 and unidentified demand cannot cancel \\
-Advanced models & \eqref{eq:forecastloss}--\eqref{eq:graphforecast} &
+Advanced models & \eqref{eq:standardize}--\eqref{eq:graphforecast} &
 training-only scaling/adjacency, fixed split, deterministic seeds \\
 Flexibility forecast &
-\eqref{eq:forecastupper}--\eqref{eq:physicalcone} &
+\eqref{eq:forecastupper}--\eqref{eq:signatureloss} &
 same-session signature identity, differentiable physical output, raw validity
 audit, and no session assignment metric \\
 Session feasibility & \eqref{eq:evfeasible} & validation, exact energy equality,

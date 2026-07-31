@@ -54,7 +54,7 @@ covers 29.77% of full six-port Q3 energy, so full-demand results also use a
 no-substitution operational metric. These advanced forecasts have not yet been
 reconstructed into sessions or coupled to MPC.
 
-The current Version 3 phase adds an original set-free flexibility target:
+The current Version 4 phase adds an original set-free flexibility target:
 cumulative lower/upper deliverable-energy envelopes and occupied-port
 equivalents at six intraday anchors. A differentiable physics head guarantees
 monotonic bounds, terminal energy equality, and occupancy-limited capacity.
@@ -65,7 +65,10 @@ with strictly positive paired block-bootstrap intervals. This comparison uses
 identical realized sessions and no Hungarian/session-assignment metric.
 Full-demand mean errors improve over seasonal naive but vary materially by
 seed, and the signatures have not yet been passed through MPC, so no revenue
-claim is attached to this experiment.
+claim is attached to this experiment. Version 4 also documents the full
+variate-token attention and physical-decoder equations, adds explicit task and
+model diagnostic tables, and replaces the main flexibility bar charts with
+connected-dot and normalized forest-style comparisons.
 
 Historical Julia/R code, notebook pipelines, large debug outputs, old models,
 and their result tables are archived with explicit warnings. Their numerical
@@ -118,9 +121,14 @@ Run the full frozen protocol (local processed data required):
 bash experiments/run_paper_protocol.sh
 ```
 
-The current Version 3 manuscript is `paper/main_segan_v3.pdf`, with source in
-`paper/main_segan.tex`. Versions 1 and 2 remain preserved. Large source/session
+The current Version 4 manuscript is `paper/main_segan_v4.pdf`, with source in
+`paper/main_segan.tex`. Versions 1--3 remain preserved. Large source/session
 CSVs remain ignored; only compact audited experiment summaries are tracked.
+
+New advanced-model development defaults to July 1--31 to keep iterations
+small. The already completed Q3 outputs remain frozen paper evidence;
+`experiments/run_paper_protocol.sh` uses explicit July--September dates only
+when a full replication is intentionally requested.
 
 ## Advanced forecast-only benchmark
 
